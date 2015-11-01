@@ -7,11 +7,11 @@ defmodule Phoenix.Controller.RenderTest do
   import Phoenix.Controller
 
   defp conn() do
-    conn(:get, "/") |> put_view(MyApp.UserView) |> fetch_params
+    conn(:get, "/") |> put_view(MyApp.UserView) |> fetch_query_params
   end
 
   defp layout_conn() do
-    conn() |> put_layout({MyApp.LayoutView, :application})
+    conn() |> put_layout({MyApp.LayoutView, :app})
   end
 
   defp html_response?(conn) do
@@ -23,14 +23,16 @@ defmodule Phoenix.Controller.RenderTest do
     assert conn.resp_body == "Hello\n"
     assert html_response?(conn)
     refute conn.halted
+    assert view_template(conn) == "index.html"
   end
 
   test "renders atom template" do
-    conn = put_in conn.params["format"], "html"
+    conn = put_format(conn, "html")
     conn = render(conn, :index, title: "Hello")
     assert conn.resp_body == "Hello\n"
     assert html_response?(conn)
     refute conn.halted
+    assert view_template(conn) == "index.html"
   end
 
   test "renders string template with put layout" do
@@ -40,7 +42,7 @@ defmodule Phoenix.Controller.RenderTest do
   end
 
   test "renders atom template with put layout" do
-    conn = put_in layout_conn.params["format"], "html"
+    conn = put_format(layout_conn, "html")
     conn = render(conn, :index, title: "Hello")
     assert conn.resp_body =~ ~r"<title>Hello</title>"
     assert html_response?(conn)
@@ -53,20 +55,20 @@ defmodule Phoenix.Controller.RenderTest do
   end
 
   test "renders template with atom layout option" do
-    conn = render(conn, "index.html", title: "Hello", layout: {MyApp.LayoutView, :application})
+    conn = render(conn, "index.html", title: "Hello", layout: {MyApp.LayoutView, :app})
     assert conn.resp_body =~ ~r"<title>Hello</title>"
     assert html_response?(conn)
   end
 
   test "renders template with string layout option" do
-    conn = render(conn, "index.html", title: "Hello", layout: {MyApp.LayoutView, "application.html"})
+    conn = render(conn, "index.html", title: "Hello", layout: {MyApp.LayoutView, "app.html"})
     assert conn.resp_body =~ ~r"<title>Hello</title>"
     assert html_response?(conn)
   end
 
   test "renders with conn status code" do
     conn = %Plug.Conn{conn | status: 404}
-    conn = render(conn, "index.html", title: "Hello", layout: {MyApp.LayoutView, "application.html"})
+    conn = render(conn, "index.html", title: "Hello", layout: {MyApp.LayoutView, "app.html"})
     assert conn.status == 404
   end
 
@@ -75,18 +77,19 @@ defmodule Phoenix.Controller.RenderTest do
     assert conn.resp_body == "Hello\n"
     assert html_response?(conn)
 
-    conn = render(conn(), "show.json", layout: {MyApp.LayoutView, :application})
+    conn = render(conn(), "show.json", layout: {MyApp.LayoutView, :app})
     assert conn.resp_body == ~s({"foo":"bar"})
   end
 
   test "skips layout depending on layout_formats with atom template" do
-    conn = put_in layout_conn.params["format"], "html"
+    conn = put_format(layout_conn, "html")
     conn = conn |> put_layout_formats([]) |> render(:index, title: "Hello")
     assert conn.resp_body == "Hello\n"
     assert html_response?(conn)
 
-    conn = put_in layout_conn.params["format"], "json"
-    conn = render(conn, :show, layout: {MyApp.LayoutView, :application})
+    conn = put_format(layout_conn, "json")
+
+    conn = render(conn, :show, layout: {MyApp.LayoutView, :app})
     assert conn.resp_body == ~s({"foo":"bar"})
   end
 
@@ -111,9 +114,33 @@ defmodule Phoenix.Controller.RenderTest do
   end
 
   test "uses action name" do
-    conn = put_in conn.params["format"], "html"
+    conn = put_format(conn, "html")
     conn = put_in conn.private[:phoenix_action], :index
     conn = render(conn, title: "Hello")
+    assert conn.resp_body == "Hello\n"
+  end
+
+  test "render/3 renders with View and Template with atom for template" do
+    conn = put_format(conn, "json")
+    conn = put_in conn.private[:phoenix_action], :show
+    conn = put_view(conn, nil)
+    conn = render(conn, MyApp.UserView, :show)
+    assert conn.resp_body == ~s({"foo":"bar"})
+  end
+
+  test "render/3 renders with View and Template" do
+    conn = put_format(conn, "json")
+    conn = put_in conn.private[:phoenix_action], :show
+    conn = put_view(conn, nil)
+    conn = render(conn, MyApp.UserView, "show.json")
+    assert conn.resp_body == ~s({"foo":"bar"})
+  end
+
+  test "render/4 renders with View and Template" do
+    conn = put_format(conn, "html")
+    conn = put_in conn.private[:phoenix_action], :index
+    conn = put_view(conn, nil)
+    conn = render(conn, MyApp.UserView, "index.html", title: "Hello")
     assert conn.resp_body == "Hello\n"
   end
 

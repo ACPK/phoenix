@@ -1,7 +1,10 @@
 defmodule Phoenix.Controller do
   import Plug.Conn
+  alias Plug.Conn.AlreadySentError
 
   require Logger
+
+  @unsent [:unset, :set]
 
   @moduledoc """
   Controllers are used to group common functionality in the same
@@ -9,14 +12,12 @@ defmodule Phoenix.Controller do
 
   For example, the route:
 
-      get "/users/:id", UserController, :show
+      get "/users/:id", MyApp.UserController, :show
 
-  will invoke the `show/2` action in the `UserController`:
+  will invoke the `show/2` action in the `MyApp.UserController`:
 
-      defmodule UserController do
-        use Phoenix.Controller
-
-        plug :action
+      defmodule MyApp.UserController do
+        use MyApp.Web, :controller
 
         def show(conn, %{"id" => id}) do
           user = Repo.get(User, id)
@@ -54,14 +55,13 @@ defmodule Phoenix.Controller do
 
   ## Plug pipeline
 
-  As routers, controllers also have their own plug pipeline. However,
-  different from routers, controllers have a single pipeline:
+  As with routers, controllers also have their own plug pipeline.
+  However, different from routers, controllers have a single pipeline:
 
-      defmodule UserController do
-        use Phoenix.Controller
+      defmodule MyApp.UserController do
+        use MyApp.Web, :controller
 
         plug :authenticate, usernames: ["jose", "eric", "sonny"]
-        plug :action
 
         def show(conn, params) do
           # authenticated users only
@@ -76,21 +76,55 @@ defmodule Phoenix.Controller do
         end
       end
 
-  The `:action` plug must always be invoked and it represents the action
-  to be dispatched to.
-
   Check `Phoenix.Controller.Pipeline` for more information on `plug/2`
   and how to customize the plug pipeline.
+
+  ## Options
+
+  When used, the controller supports the following options:
+
+    * `:namespace` - sets the namespace to properly inflect
+      the layout view. By default it uses the base alias
+      in your controller name
+
+    * `:log` - the level to log. When false, disables controller
+      logging
+
+  ## Overriding `action/2` for custom arguments
+
+  Phoenix injects an `action/2` plug in your controller which calls the
+  function matched from the router. By default, it passes the conn and params.
+  In some cases, overriding the `action/2` plug in your controller is a
+  useful way to inject certain argument to your actions that you
+  would otherwise need to fetch off the connection repeatedly. For example,
+  imagine if you stored a `conn.assigns.current_user` in the connection
+  and wanted quick access to the user for every action in your controller:
+
+      def action(conn, _) do
+        apply(__MODULE__, action_name(conn), [conn,
+                                              conn.params,
+                                              conn.assigns.current_user])
+      end
+
+      def index(conn, _params, user) do
+        videos = Repo.all(user_videos(user))
+        # ...
+      end
+
+      def delete(conn, %{"id" => id}, user) do
+        video = Repo.get!(user_videos(user), id)
+        # ...
+      end
   """
-  defmacro __using__(_options) do
-    quote do
+  defmacro __using__(opts) do
+    quote bind_quoted: [opts: opts] do
       import Plug.Conn
       import Phoenix.Controller
 
       use Phoenix.Controller.Pipeline
 
-      plug Phoenix.Controller.Logger
-      plug :put_new_layout, {Phoenix.Controller.__layout__(__MODULE__), :application}
+      plug Phoenix.Controller.Logger, opts
+      plug :put_new_layout, {Phoenix.Controller.__layout__(__MODULE__, opts), :app}
       plug :put_new_view, Phoenix.Controller.__view__(__MODULE__)
     end
   end
@@ -120,6 +154,18 @@ defmodule Phoenix.Controller do
   def endpoint_module(conn), do: conn.private.phoenix_endpoint
 
   @doc """
+  Returns the template name rendered in the view as a string
+  (or nil if no template was rendered).
+  """
+  @spec view_template(Plug.Conn.t) :: binary | nil
+  def view_template(conn), do: conn.private[:phoenix_template]
+
+  defp get_json_encoder do
+    Application.get_env(:phoenix, :format_encoders)
+    |> Keyword.get(:json, Poison)
+  end
+
+  @doc """
   Sends JSON response.
 
   It uses the configured `:format_encoders` under the `:phoenix`
@@ -132,12 +178,78 @@ defmodule Phoenix.Controller do
   """
   @spec json(Plug.Conn.t, term) :: Plug.Conn.t
   def json(conn, data) do
-    encoder =
-      Application.get_env(:phoenix, :format_encoders)
-      |> Keyword.get(:json, Poison)
+    encoder = get_json_encoder()
 
     send_resp(conn, conn.status || 200, "application/json", encoder.encode_to_iodata!(data))
   end
+
+  @doc """
+  A plug that may convert a JSON response into a JSONP one.
+
+  In case a JSON response is returned, it will be converted
+  to a JSONP as long as the callback field is present in
+  the query string. The callback field itself defaults to
+  "callback" but may be configured with the callback option.
+
+  In case there is no callback or the response is not encoded
+  in JSON format, it is a no-op.
+
+  Only alphanumeric characters and underscore are allowed in the
+  callback name. Otherwise an exception is raised.
+
+  ## Examples
+
+      # Will convert JSON to JSONP if callback=someFunction is given
+      plug :allow_jsonp
+
+      # Will convert JSON to JSONP if cb=someFunction is given
+      plug :allow_jsonp, callback: "cb"
+
+  """
+  @spec allow_jsonp(Plug.Conn.t, Keyword.t) :: Plug.Conn.t
+  def allow_jsonp(conn, opts \\ []) do
+    callback = Keyword.get(opts, :callback, "callback")
+    case Map.fetch(conn.query_params, callback) do
+      :error    -> conn
+      {:ok, ""} -> conn
+      {:ok, cb} ->
+        validate_jsonp_callback!(cb)
+        register_before_send(conn, fn conn ->
+          if json_response?(conn) do
+            conn
+            |> put_resp_header("content-type", "application/javascript")
+            |> resp(conn.status, jsonp_body(conn.resp_body, cb))
+          else
+            conn
+          end
+        end)
+    end
+  end
+
+  defp json_response?(conn) do
+    case get_resp_header(conn, "content-type") do
+      ["application/json;" <> _] -> true
+      ["application/json"] -> true
+      _ -> false
+    end
+  end
+
+  defp jsonp_body(data, callback) do
+    body =
+      data
+      |> IO.iodata_to_binary()
+      |> String.replace(<<0x2028::utf8>>, "\\u2028")
+      |> String.replace(<<0x2029::utf8>>, "\\u2029")
+
+    "/**/ typeof #{callback} === 'function' && #{callback}(#{body});"
+  end
+
+  defp validate_jsonp_callback!(<<h, t::binary>>)
+    when h in ?0..?9 or h in ?A..?Z or h in ?a..?z or h == ?_,
+    do: validate_jsonp_callback!(t)
+  defp validate_jsonp_callback!(<<>>), do: :ok
+  defp validate_jsonp_callback!(_),
+    do: raise(ArgumentError, "the JSONP callback name contains invalid characters")
 
   @doc """
   Sends text response.
@@ -182,11 +294,11 @@ defmodule Phoenix.Controller do
   """
   def redirect(conn, opts) when is_list(opts) do
     url  = url(opts)
-    {:safe, html} = Phoenix.HTML.html_escape(url)
+    html = Plug.HTML.html_escape(url)
     body = "<html><body>You are being <a href=\"#{html}\">redirected</a>.</body></html>"
 
     conn
-    |> put_resp_header("Location", url)
+    |> put_resp_header("location", url)
     |> send_resp(conn.status || 302, "text/html", body)
   end
 
@@ -194,8 +306,9 @@ defmodule Phoenix.Controller do
     cond do
       to = opts[:to] ->
         case to do
-          "/" <> _ -> to
-          _        -> raise ArgumentError, "the :to option in redirect expects a path"
+          "//" <> _ -> raise_invalid_url()
+          "/" <> _  -> to
+          _         -> raise_invalid_url()
         end
       external = opts[:external] ->
         external
@@ -203,21 +316,35 @@ defmodule Phoenix.Controller do
         raise ArgumentError, "expected :to or :external option in redirect/2"
     end
   end
-
-  @doc """
-  Stores the view for rendering.
-  """
-  @spec put_view(Plug.Conn.t, atom) :: Plug.Conn.t
-  def put_view(conn, module) do
-    put_private(conn, :phoenix_view, module)
+  defp raise_invalid_url do
+    raise ArgumentError, "the :to option in redirect expects a path"
   end
 
   @doc """
+  Stores the view for rendering.
+
+  Raises `Plug.Conn.AlreadySentError` if the conn was already sent.
+  """
+  @spec put_view(Plug.Conn.t, atom) :: Plug.Conn.t
+  def put_view(%Plug.Conn{state: state} = conn, module) when state in @unsent do
+    put_private(conn, :phoenix_view, module)
+  end
+
+  def put_view(_conn, _module), do: raise AlreadySentError
+
+  @doc """
   Stores the view for rendering if one was not stored yet.
+
+  Raises `Plug.Conn.AlreadySentError` if the conn was already sent.
   """
   @spec put_new_view(Plug.Conn.t, atom) :: Plug.Conn.t
-  def put_new_view(conn, module) do
+  def put_new_view(%Plug.Conn{state: state} = conn, module)
+      when state in @unsent do
     update_in conn.private, &Map.put_new(&1, :phoenix_view, module)
+  end
+
+  def put_new_view(_conn, _module) do
+    raise Plug.Conn.AlreadySentError
   end
 
   @doc """
@@ -236,7 +363,8 @@ defmodule Phoenix.Controller do
   accepts the layout name to be given as a string or as an atom. If a
   string, it must contain the format. Passing an atom means the layout
   format will be found at rendering time, similar to the template in
-  `render/3`.
+  `render/3`. It can also be set to `false`. In this case, no layout
+  would be used.
 
   ## Examples
 
@@ -255,19 +383,28 @@ defmodule Phoenix.Controller do
       iex> layout(conn)
       {AppView, :print}
 
+  Raises `Plug.Conn.AlreadySentError` if the conn was already sent.
   """
   @spec put_layout(Plug.Conn.t, {atom, binary} | binary | false) :: Plug.Conn.t
-  def put_layout(conn, layout)
+  def put_layout(%Plug.Conn{state: state} = conn, layout) do
+    if state in @unsent do
+      _put_layout(conn, layout)
+    else
+      raise Plug.Conn.AlreadySentError
+    end
+  end
 
-  def put_layout(conn, false) do
+  def _put_layout(conn, layout)
+
+  def _put_layout(conn, false) do
     put_private(conn, :phoenix_layout, false)
   end
 
-  def put_layout(conn, {mod, layout}) when is_atom(mod) do
+  def _put_layout(conn, {mod, layout}) when is_atom(mod) do
     put_private(conn, :phoenix_layout, {mod, layout})
   end
 
-  def put_layout(conn, layout) when is_binary(layout) or is_atom(layout) do
+  def _put_layout(conn, layout) when is_binary(layout) or is_atom(layout) do
     update_in conn.private, fn private ->
       case Map.get(private, :phoenix_layout, false) do
         {mod, _} -> Map.put(private, :phoenix_layout, {mod, layout})
@@ -278,12 +415,17 @@ defmodule Phoenix.Controller do
 
   @doc """
   Stores the layout for rendering if one was not stored yet.
+
+  Raises `Plug.Conn.AlreadySentError` if the conn was already sent.
   """
   @spec put_new_layout(Plug.Conn.t, {atom, binary} | false) :: Plug.Conn.t
-  def put_new_layout(conn, layout)
-      when tuple_size(layout) == 2
-      when layout == false do
-    update_in conn.private, &Map.put_new(&1, :phoenix_layout, layout)
+  def put_new_layout(%Plug.Conn{state: state} = conn, layout)
+      when (is_tuple(layout) and tuple_size(layout) == 2) or layout == false do
+    if state in @unsent do
+      update_in conn.private, &Map.put_new(&1, :phoenix_layout, layout)
+    else
+      raise AlreadySentError
+    end
   end
 
   @doc """
@@ -298,10 +440,16 @@ defmodule Phoenix.Controller do
       iex> layout_formats conn
       ["html", "mobile"]
 
+  Raises `Plug.Conn.AlreadySentError` if the conn was already sent.
   """
   @spec put_layout_formats(Plug.Conn.t, [String.t]) :: Plug.Conn.t
-  def put_layout_formats(conn, formats) when is_list(formats) do
+  def put_layout_formats(%Plug.Conn{state: state} = conn, formats)
+      when state in @unsent and is_list(formats) do
     put_private(conn, :phoenix_layout_formats, formats)
+  end
+
+  def put_layout_formats(_conn, _formats) do
+    raise Plug.Conn.AlreadySentError
   end
 
   @doc """
@@ -347,8 +495,8 @@ defmodule Phoenix.Controller do
     * `conn` - the `Plug.Conn` struct
 
     * `template` - which may be an atom or a string. If an atom, like `:index`,
-      it will render a template with the same format as the one found in
-      `conn.params["format"]`. For example, for an HTML request, it will render
+      it will render a template with the same format as the one returned by
+      `get_format/1`. For example, for an HTML request, it will render
       the "index.html" template. If the template is a string, it must contain
       the extension too, like "index.json"
 
@@ -361,9 +509,7 @@ defmodule Phoenix.Controller do
       defmodule MyApp.UserController do
         use Phoenix.Controller
 
-        plug :action
-
-        def show(conn) do
+        def show(conn, _params) do
           render conn, "show.html", message: "Hello"
         end
       end
@@ -375,7 +521,7 @@ defmodule Phoenix.Controller do
   on the request. To do so, you can pass the template name as an atom (without
   the extension):
 
-      def show(conn) do
+      def show(conn, _params) do
         render conn, :show, message: "Hello"
       end
 
@@ -389,24 +535,27 @@ defmodule Phoenix.Controller do
 
   By default, Controllers render templates in a view with a similar name to the
   controller. For example, `MyApp.UserController` will render templates inside
-  the `MyApp.UserView`. This information can be changed any time by using the
-  `put_view/2` function:
+  the `MyApp.UserView`. This information can be changed any time by using
+  `render/3`, `render/4` or the `put_view/2` function:
 
-      def show(conn) do
+      def show(conn, _params) do
+        render(conn, MyApp.SpecialView, :show, message: "Hello")
+      end
+
+      def show(conn, _params) do
         conn
         |> put_view(MyApp.SpecialView)
         |> render(:show, message: "Hello")
       end
-.
+
   `put_view/2` can also be used as a plug:
 
       defmodule MyApp.UserController do
         use Phoenix.Controller
 
         plug :put_view, MyApp.SpecialView
-        plug :action
 
-        def show(conn) do
+        def show(conn, _params) do
           render conn, :show, message: "Hello"
         end
       end
@@ -419,14 +568,12 @@ defmodule Phoenix.Controller do
       defmodule MyApp.UserController do
         use Phoenix.Controller
 
-        plug :action
-
-        def show(conn) do
+        def show(conn, _params) do
           render conn, "show.html", message: "Hello"
         end
       end
 
-  will render the  "show.html" template inside an "application.html"
+  will render the  "show.html" template inside an "app.html"
   template specified in `MyApp.LayoutView`. `put_layout/2` can be used
   to change the layout, similar to how `put_view/2` can be used to change
   the view.
@@ -435,33 +582,66 @@ defmodule Phoenix.Controller do
   which formats support/require layout rendering (defaults to "html" only).
   """
   @spec render(Plug.Conn.t, binary | atom, Dict.t) :: Plug.Conn.t
-  def render(conn, template, assigns) when is_atom(template) do
+  @spec render(Plug.Conn.t, module, binary | atom) :: Plug.Conn.t
+  def render(conn, template, assigns)
+    when is_atom(template) and is_list(assigns) do
     format =
-      conn.params["format"] ||
-      raise "cannot render template #{inspect template} because conn.params[\"format\"] is not set. " <>
+      get_format(conn) ||
+      raise "cannot render template #{inspect template} because conn.params[\"_format\"] is not set. " <>
             "Please set `plug :accepts, %w(html json ...)` in your pipeline."
-    render(conn, template_name(template, format), format, assigns)
+    do_render(conn, template_name(template, format), format, assigns)
   end
 
   def render(conn, template, assigns) when is_binary(template) do
     case Path.extname(template) do
       "." <> format ->
-        render(conn, template, format, assigns)
+        do_render(conn, template, format, assigns)
       "" ->
         raise "cannot render template #{inspect template} without format. Use an atom if the " <>
               "template format is meant to be set dynamically based on the request format"
     end
   end
 
-  def render(conn, template, format, assigns) do
+  def render(conn, view, template)
+    when is_atom(view) and is_binary(template) or is_atom(template) do
+    render(conn, view, template, [])
+  end
+
+  @spec render(Plug.Conn.t, atom, atom | binary, Dict.t) :: Plug.Conn.t
+  def render(conn, view, template, assigns)
+    when is_atom(view) and is_binary(template) or is_atom(template) do
+    conn
+    |> put_view(view)
+    |> render(template, assigns)
+  end
+
+  defp do_render(conn, template, format, assigns) do
     assigns = to_map(assigns)
     content_type = Plug.MIME.type(format)
-    conn = prepare_assigns(conn, assigns, format)
+    conn =
+      conn
+      |> put_private(:phoenix_template, template)
+      |> prepare_assigns(assigns, format)
+
     view = Map.get(conn.private, :phoenix_view) ||
             raise "a view module was not specified, set one with put_view/2"
     data = Phoenix.View.render_to_iodata(view, template,
                                          Map.put(conn.assigns, :conn, conn))
     send_resp(conn, conn.status || 200, content_type, data)
+  end
+
+  @doc """
+  Puts the format in the connection.
+
+  See `get_format/1` for retrieval.
+  """
+  def put_format(conn, format), do: put_private(conn, :phoenix_format, format)
+
+  @doc """
+  Returns the request format, such as "json", "html".
+  """
+  def get_format(conn) do
+    conn.private[:phoenix_format] || conn.params["_format"]
   end
 
   @doc """
@@ -571,7 +751,29 @@ defmodule Phoenix.Controller do
   retrieving and deleting CSRF tokens.
   """
   def protect_from_forgery(conn, opts \\ []) do
-    Plug.CSRFProtection.call(conn, opts)
+    Plug.CSRFProtection.call(conn, Plug.CSRFProtection.init(opts))
+  end
+
+  @doc """
+  Put headers that improve browser security.
+
+  It sets the following headers:
+
+      * x-frame-options - set to SAMEORIGIN to avoid clickjacking
+        through iframes unless in the same origin
+      * x-content-type-options - set to nosniff. This requires
+        script and style tags to be sent with proper content type
+      * x-xss-protection - set to "1; mode=block" to improve XSS
+        protection on both Chrome and IE
+
+  Custom headers may also be given.
+  """
+  def put_secure_browser_headers(conn, _opts \\ []) do
+    merge_resp_headers(conn, [
+      {"x-frame-options", "SAMEORIGIN"},
+      {"x-xss-protection", "1; mode=block"},
+      {"x-content-type-options", "nosniff"}
+    ])
   end
 
   @doc """
@@ -592,9 +794,9 @@ defmodule Phoenix.Controller do
   negotiation based on the request information. If the client
   accepts any of the given formats, the request proceeds.
 
-  If the request contains a "format" parameter, it is
+  If the request contains a "_format" parameter, it is
   considered to be the format desired by the client. If no
-  "format" parameter is available, this function will parse
+  "_format" parameter is available, this function will parse
   the "accept" header and find a matching format accordingly.
 
   It is important to notice that browsers have historically
@@ -604,7 +806,7 @@ defmodule Phoenix.Controller do
     * the accepted list of arguments contains the "html" format
 
     * the accept header specified more than one media type preceeded
-      or followed by the wildcard media type "*/*"
+      or followed by the wildcard media type "`*/*`"
 
   This function raises `Phoenix.NotAcceptableError`, which is rendered
   with status 406, whenever the server cannot serve a response in any
@@ -621,10 +823,34 @@ defmodule Phoenix.Controller do
       plug :accepts, ["html", "json"]
       plug :accepts, ~w(html json)
 
+  ## Custom media types
+
+  It is possible to add custom media types to your Phoenix application.
+  The first step is to teach Plug about those new media types in
+  your `config/config.exs` file:
+
+      config :plug, :mimes, %{
+        "application/vnd.api+json" => ["json-api"]
+      }
+
+  The key is the media type, the value is a list of formats the
+  media type can be identified with. For example, by using
+  "json-api", you will be able to use templates with extension
+  "index.json-api" or to force a particular format in a given
+  URL by sending "?_format=json-api".
+
+  After this change, you must recompile plug:
+
+      $ touch deps/plug/mix.exs
+      $ mix deps.compile plug
+
+  And now you can use it in accepts too:
+
+      plug :accepts, ["html", "json-api"]
   """
   @spec accepts(Plug.Conn.t, [binary]) :: Plug.Conn.t | no_return
   def accepts(conn, [_|_] = accepted) do
-    case Map.fetch conn.params, "format" do
+    case Map.fetch(conn.params, "_format") do
       {:ok, format} ->
         handle_params_accept(conn, format, accepted)
       :error ->
@@ -634,9 +860,9 @@ defmodule Phoenix.Controller do
 
   defp handle_params_accept(conn, format, accepted) do
     if format in accepted do
-      conn
+      put_format(conn, format)
     else
-      Logger.error "Unknown format #{inspect format} in plug :accepts, " <>
+      Logger.debug "Unknown format #{inspect format} in plug :accepts, " <>
                    "expected one of #{inspect accepted}"
       conn |> send_resp(406, "") |> halt()
     end
@@ -645,7 +871,7 @@ defmodule Phoenix.Controller do
   # In case there is no accept header or the header is */*
   # we use the first format specified in the accepts list.
   defp handle_header_accept(conn, header, [first|_]) when header == [] or header == ["*/*"] do
-    accept(conn, first)
+    put_format(conn, first)
   end
 
   # In case there is a header, we need to parse it.
@@ -653,7 +879,7 @@ defmodule Phoenix.Controller do
   # we unfortunately need to assume it is a browser sending us a request.
   defp handle_header_accept(conn, [header|_], accepted) do
     if header =~ "*/*" and "html" in accepted do
-      accept(conn, "html")
+      put_format(conn, "html")
     else
       parse_header_accept(conn, String.split(header, ","), [], accepted)
     end
@@ -666,7 +892,7 @@ defmodule Phoenix.Controller do
         q    = parse_q(args)
 
         if q === 1.0 && (format = find_format(exts, accepted)) do
-          accept(conn, format)
+          put_format(conn, format)
         else
           parse_header_accept(conn, t, [{-q, exts}|acc], accepted)
         end
@@ -684,7 +910,7 @@ defmodule Phoenix.Controller do
 
   defp parse_header_accept(conn, {_, exts}, accepted) do
     if format = find_format(exts, accepted) do
-      accept(conn, format)
+      put_format(conn, format)
     end
   end
 
@@ -706,18 +932,14 @@ defmodule Phoenix.Controller do
   defp find_format("*/*", accepted), do: Enum.fetch!(accepted, 0)
   defp find_format(exts, accepted),  do: Enum.find(exts, &(&1 in accepted))
 
-  defp accept(conn, format) do
-    put_in conn.params["format"], format
-  end
-
   defp refuse(conn, accepted) do
-    Logger.error "No supported media type in accept header in plug :accepts, " <>
+    Logger.debug "No supported media type in accept header in plug :accepts, " <>
                  "expected one of #{inspect accepted}"
     conn |> send_resp(406, "") |> halt()
   end
 
   @doc """
-  Fetches the flash so it can be used during the request.
+  Fetches the flash storage.
   """
   def fetch_flash(conn, _opts \\ []) do
     flash = get_session(conn, "phoenix_flash") || %{}
@@ -744,8 +966,8 @@ defmodule Phoenix.Controller do
 
   ## Examples
 
-      iex> conn = put_flash(conn, :notice, "Welcome Back!")
-      iex> get_flash(conn, :notice)
+      iex> conn = put_flash(conn, :info, "Welcome Back!")
+      iex> get_flash(conn, :info)
       "Welcome Back!"
 
   """
@@ -758,9 +980,9 @@ defmodule Phoenix.Controller do
 
   ## Examples
 
-      iex> conn = put_flash(conn, :notice, "Welcome Back!")
+      iex> conn = put_flash(conn, :info, "Welcome Back!")
       iex> get_flash(conn)
-      %{"notice" => "Welcome Back!"}
+      %{"info" => "Welcome Back!"}
 
   """
   def get_flash(conn) do
@@ -773,8 +995,8 @@ defmodule Phoenix.Controller do
 
   ## Examples
 
-      iex> conn = put_flash(conn, :notice, "Welcome Back!")
-      iex> get_flash(conn, :notice)
+      iex> conn = put_flash(conn, :info, "Welcome Back!")
+      iex> get_flash(conn, :info)
       "Welcome Back!"
 
   """
@@ -801,11 +1023,22 @@ defmodule Phoenix.Controller do
     controller_module
     |> Phoenix.Naming.unsuffix("Controller")
     |> Kernel.<>("View")
-    |> Module.concat(nil)
+    |> String.to_atom()
   end
 
   @doc false
-  def __layout__(controller_module) do
-    Phoenix.Naming.base_concat(controller_module, "LayoutView")
+  def __layout__(controller_module, opts) do
+    namespace =
+      if given = Keyword.get(opts, :namespace) do
+        given
+      else
+        controller_module
+        |> Atom.to_string()
+        |> String.split(".")
+        |> Enum.drop(-1)
+        |> Enum.take(2)
+        |> Module.concat()
+      end
+    Module.concat(namespace, "LayoutView")
   end
 end

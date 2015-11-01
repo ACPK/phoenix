@@ -1,91 +1,315 @@
 defmodule Phoenix.Channel.Server do
   use GenServer
   require Logger
+
   alias Phoenix.PubSub
+  alias Phoenix.Socket
+  alias Phoenix.Socket.Broadcast
+  alias Phoenix.Socket.Message
+  alias Phoenix.Socket.Reply
 
-  @moduledoc """
-  Handles `%Phoenix.Socket{}` state and invokes channel callbacks.
+  @moduledoc false
 
-  ## handle_info/2
-  Regular Elixir messages are forwarded to the socket channel's
-  `handle_info/2` callback.
+  ## Transport API
 
+  @doc """
+  Joins the channel in socket with authentication payload.
   """
+  @spec join(Socket.t, map) :: {:ok, map, pid} | {:error, map}
+  def join(socket, auth_payload) do
+    ref = make_ref()
 
-  def start_link(socket, auth_payload) do
-    GenServer.start_link(__MODULE__, [socket, auth_payload])
-  end
-
-  def init([socket, auth_payload]) do
-    case socket.channel.join(socket.topic, auth_payload, socket) do
-      {:ok, socket} ->
-        {:ok, socket}
-          socket = put_in(socket, [:pid], self)
-          PubSub.subscribe(socket.pubsub_server, socket.pid, socket.topic, link: true)
-
-          {:ok, socket}
-
-      :ignore -> :ignore
-
-      result ->
-        Logger.error fn -> """
-            Expected `#{inspect socket.channel}.join/3` to return `{:ok, socket} | :ignore}`,
-            got #{inspect result}
-          """
-        end
-        {:stop, {:badarg, result}}
+    case GenServer.start_link(__MODULE__, {socket, auth_payload, self(), ref}) do
+      {:ok, pid} ->
+        receive do: ({^ref, reply} -> {:ok, reply, pid})
+      :ignore ->
+        receive do: ({^ref, reply} -> {:error, reply})
+      {:error, reason} ->
+        Logger.error fn -> Exception.format_exit(reason) end
+        {:error, %{reason: "join crashed"}}
     end
   end
 
-  def handle_cast({:handle_in, "leave", payload}, socket) do
-    leave_and_stop(payload, socket)
+  @doc """
+  Notifies the channel the client closed.
+
+  This event is synchronous as we want to guarantee
+  proper termination of the channel.
+  """
+  def close(pid, timeout \\ 5000) do
+    # We need to guarantee that the channel has been closed
+    # otherwise the link in the transport will trigger it to
+    # crash.
+    ref = Process.monitor(pid)
+    GenServer.cast(pid, :close)
+    receive do
+      {:DOWN, ^ref, _, _, _} -> :ok
+    after
+      timeout ->
+        Process.exit(pid, :kill)
+        receive do
+          {:DOWN, ^ref, _, _, _} -> :ok
+        end
+    end
   end
 
   @doc """
-  Forwards incoming client messages through `handle_in/3` callbacks
+  Gets the socket from the channel.
   """
-  def handle_cast({:handle_in, event, payload}, socket) when event != "join" do
+  def socket(pid) do
+    GenServer.call(pid, :socket)
+  end
+
+  ## Channel API
+
+  @doc """
+  Broadcasts on the given pubsub server with the given
+  `topic`, `event` and `payload`.
+
+  The message is encoded as `Phoenix.Socket.Broadcast`.
+  """
+  def broadcast(pubsub_server, topic, event, payload)
+      when is_binary(topic) and is_binary(event) and is_map(payload) do
+    PubSub.broadcast pubsub_server, topic, %Broadcast{
+      topic: topic,
+      event: event,
+      payload: payload
+    }
+  end
+  def broadcast(_, _, _, _), do: raise_invalid_message
+
+  @doc """
+  Broadcasts on the given pubsub server with the given
+  `topic`, `event` and `payload`.
+
+  Raises in case of crashes.
+  """
+  def broadcast!(pubsub_server, topic, event, payload)
+      when is_binary(topic) and is_binary(event) and is_map(payload) do
+    PubSub.broadcast! pubsub_server, topic, %Broadcast{
+      topic: topic,
+      event: event,
+      payload: payload
+    }
+  end
+  def broadcast!(_, _, _, _), do: raise_invalid_message
+
+  @doc """
+  Broadcasts on the given pubsub server with the given
+  `from`, `topic`, `event` and `payload`.
+
+  The message is encoded as `Phoenix.Socket.Broadcast`.
+  """
+  def broadcast_from(pubsub_server, from, topic, event, payload)
+      when is_binary(topic) and is_binary(event) and is_map(payload) do
+    PubSub.broadcast_from pubsub_server, from, topic, %Broadcast{
+      topic: topic,
+      event: event,
+      payload: payload
+    }
+  end
+  def broadcast_from(_, _, _, _, _), do: raise_invalid_message
+
+  @doc """
+  Broadcasts on the given pubsub server with the given
+  `from`, `topic`, `event` and `payload`.
+
+  Raises in case of crashes.
+  """
+  def broadcast_from!(pubsub_server, from, topic, event, payload)
+      when is_binary(topic) and is_binary(event) and is_map(payload) do
+    PubSub.broadcast_from! pubsub_server, from, topic, %Broadcast{
+      topic: topic,
+      event: event,
+      payload: payload
+    }
+  end
+  def broadcast_from!(_, _, _, _, _), do: raise_invalid_message
+
+  @doc """
+  Pushes a message with the given topic, event and payload
+  to the given process.
+  """
+  def push(pid, topic, event, payload, serializer)
+      when is_binary(topic) and is_binary(event) and is_map(payload) do
+
+    encoded_msg = serializer.encode!(%Message{topic: topic,
+                                              event: event,
+                                              payload: payload})
+    send pid, encoded_msg
+    :ok
+  end
+  def push(_, _, _, _), do: raise_invalid_message
+
+  defp raise_invalid_message do
+    raise ArgumentError, "topic and event must be strings, message must be a map"
+  end
+
+  ## Callbacks
+
+  @doc false
+  def init({socket, auth_payload, parent, ref}) do
+    socket = %{socket | channel_pid: self()}
+
+    case socket.channel.join(socket.topic, auth_payload, socket) do
+      {:ok, socket} ->
+        join(socket, %{}, parent, ref)
+      {:ok, reply, socket} ->
+        join(socket, reply, parent, ref)
+      {:error, reply} ->
+        send(parent, {ref, reply})
+        :ignore
+      other ->
+        raise """
+        Channel join is expected to return one of:
+
+            {:ok, Socket.t} |
+            {:ok, reply :: map, Socket.t} |
+            {:error, reply :: map}
+
+        got #{inspect other}
+        """
+    end
+  end
+
+  defp join(socket, reply, parent, ref) do
+    PubSub.subscribe(socket.pubsub_server, self(), socket.topic,
+      link: true,
+      fastlane: {socket.transport_pid,
+                 socket.serializer,
+                 socket.channel.__intercepts__()})
+
+    send(parent, {ref, reply})
+    {:ok, %{socket | joined: true}}
+  end
+
+  @doc false
+  def handle_call(:socket, _from, socket) do
+    {:reply, socket, socket}
+  end
+
+  @doc false
+  def handle_cast(:close, socket) do
+    handle_result({:stop, {:shutdown, :closed}, socket}, :handle_in)
+  end
+
+  @doc false
+  def handle_info(%Message{topic: topic, event: "phx_join"}, %{topic: topic} = socket) do
+    Logger.info fn -> "#{inspect socket.channel} received join event with topic \"#{topic}\" but channel already joined" end
+
+    handle_result({:reply, {:error, %{reason: "already joined"}}, socket}, :handle_in)
+  end
+
+  def handle_info(%Message{topic: topic, event: "phx_leave", ref: ref}, %{topic: topic} = socket) do
+    handle_result({:stop, {:shutdown, :left}, :ok, put_in(socket.ref, ref)}, :handle_in)
+  end
+
+  def handle_info(%Message{topic: topic, event: event, payload: payload, ref: ref},
+                  %{topic: topic} = socket) do
     event
-    |> socket.channel.handle_in(payload, socket)
-    |> handle_result
+    |> socket.channel.handle_in(payload, put_in(socket.ref, ref))
+    |> handle_result(:handle_in)
   end
 
-  @doc """
-  Forwards broadcast through `handle_out/3` callbacks
-  """
-  def handle_info({:socket_broadcast, msg}, socket) do
-    msg.event
-    |> socket.channel.handle_out(msg.payload, socket)
-    |> handle_result
+  def handle_info(%Broadcast{topic: topic, event: event, payload: payload},
+                  %{topic: topic} = socket) do
+    event
+    |> socket.channel.handle_out(payload, socket)
+    |> handle_result(:handle_out)
   end
 
-  @doc """
-  Forwards regular Elixir messages through `handle_info/2` callbacks
-  """
   def handle_info(msg, socket) do
     msg
     |> socket.channel.handle_info(socket)
-    |> handle_result
+    |> handle_result(:handle_info)
   end
 
-
-  defp handle_result({:ok, socket}), do: {:noreply, socket}
-  defp handle_result({:leave, socket}), do: leave_and_stop(:normal, socket)
-  defp handle_result({:error, reason, socket}) do
-    {:stop, {:error, reason}, socket}
+  @doc false
+  def terminate(reason, socket) do
+    socket.channel.terminate(reason, socket)
   end
-  defp handle_result(result) do
+
+  ## Handle results
+
+  defp handle_result({:reply, reply, %Socket{} = socket}, callback) do
+    handle_reply(socket, reply, callback)
+    {:noreply, socket}
+  end
+
+  defp handle_result({:stop, reason, reply, socket}, callback) do
+    handle_reply(socket, reply, callback)
+    {:stop, reason, socket}
+  end
+
+  defp handle_result({:stop, reason, socket}, _callback) do
+    {:stop, reason, socket}
+  end
+
+  defp handle_result({:noreply, socket}, _callback) do
+    {:noreply, socket}
+  end
+
+  defp handle_result(result, :handle_in) do
     raise """
-      Expected callback to return `{:ok, socket} | {:error, reason, socket} || {:leave, socket}`,
-      got #{inspect result}
+    Expected `handle_in/3` to return one of:
+
+        {:noreply, Socket.t} |
+        {:reply, {status :: atom, response :: map}, Socket.t} |
+        {:reply, status :: atom, Socket.t} |
+        {:stop, reason :: term, Socket.t} |
+        {:stop, reason :: term, {status :: atom, response :: map}, Socket.t} |
+        {:stop, reason :: term, status :: atom, Socket.t}
+
+    got #{inspect result}
     """
   end
 
-  defp leave_and_stop(reason, socket) do
-    {:ok, socket} = socket.channel.leave(reason, socket)
+  defp handle_result(result, callback) do
+    raise """
+    Expected `#{callback}` to return one of:
 
-    PubSub.unsubscribe(socket.pubsub_server, socket.pid, socket.topic)
+        {:noreply, Socket.t} |
+        {:stop, reason :: term, Socket.t} |
 
-    {:stop, :normal, :left}
+    got #{inspect result}
+    """
+  end
+
+  ## Handle replies
+
+  defp handle_reply(socket, {status, payload}, :handle_in)
+       when is_atom(status) and is_map(payload) do
+
+    send socket.transport_pid, socket.serializer.encode!(
+      %Reply{topic: socket.topic, ref: socket.ref, status: status, payload: payload}
+    )
+  end
+
+  defp handle_reply(socket, status, :handle_in) when is_atom(status) do
+    handle_reply(socket, {status, %{}}, :handle_in)
+  end
+
+  defp handle_reply(_socket, reply, :handle_in) do
+    raise """
+    Channel replies from `handle_in/3` are expected to be one of:
+
+        status :: atom
+        {status :: atom, response :: map}
+
+    for example:
+
+        {:reply, :ok, socket}
+        {:reply, {:ok, %{}}, socket}
+        {:stop, :shutdown, {:error, %{}}, socket}
+
+    got #{inspect reply}
+    """
+  end
+
+  defp handle_reply(_socket, _reply, _other) do
+    raise """
+    Channel replies can only be sent from a `handle_in/3` callback.
+    Use `push/3` to send an out-of-band message down the socket
+    """
   end
 end

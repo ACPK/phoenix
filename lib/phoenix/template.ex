@@ -79,20 +79,23 @@ defmodule Phoenix.Template do
 
   alias Phoenix.Template
 
-  @encoders [html: Phoenix.HTML.Engine, json: Poison]
+  @encoders [html: Phoenix.Template.HTML, json: Poison]
   @engines  [eex: Phoenix.Template.EExEngine, exs: Phoenix.Template.ExsEngine]
 
   defmodule UndefinedError do
     @moduledoc """
     Exception raised when a template cannot be found.
     """
-    defexception [:available, :template, :module, :root]
+    defexception [:available, :template, :module, :root, :assigns]
 
     def message(exception) do
       "Could not render #{inspect exception.template} for #{inspect exception.module}, "
-        <> "please define a clause for render/2 or define a template at "
+        <> "please define a matching clause for render/2 or define a template at "
         <> "#{inspect Path.relative_to_cwd exception.root}. "
         <> available_templates(exception.available)
+        <> "\nAssigns:\n\n"
+        <> inspect(exception.assigns)
+        <> "\n"
     end
 
     defp available_templates([]), do: "No templates were compiled for this module."
@@ -120,14 +123,19 @@ defmodule Phoenix.Template do
         render(template, Enum.into(assigns, %{}))
       end
 
+      def render(module, template) when is_atom(module) do
+        Phoenix.View.render(module, template, %{})
+      end
+
       @doc """
       Callback invoked when no template is found.
       By default it raises but can be customized
       to render a particular template.
       """
-      def template_not_found(template, _assigns) do
+      def template_not_found(template, assigns) do
         {root, names} = __templates__
         raise UndefinedError,
+          assigns: assigns,
           available: names,
           template: template,
           root: root,
@@ -155,6 +163,9 @@ defmodule Phoenix.Template do
     quote line: -1 do
       unquote(codes)
 
+      def render(tpl, %{render_existing: {__MODULE__, tpl}}) do
+        nil
+      end
       def render(template, assigns) do
         template_not_found(template, assigns)
       end
@@ -323,4 +334,3 @@ defmodule Phoenix.Template do
     end}
   end
 end
-

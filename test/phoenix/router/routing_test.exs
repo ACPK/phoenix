@@ -4,7 +4,6 @@ defmodule Phoenix.Router.RoutingTest do
 
   defmodule UserController do
     use Phoenix.Controller
-    plug :action
     def index(conn, _params), do: text(conn, "users index")
     def show(conn, _params), do: text(conn, "users show")
     def top(conn, _params), do: text(conn, "users top")
@@ -21,6 +20,7 @@ defmodule Phoenix.Router.RoutingTest do
     get "/", UserController, :index, as: :users
     get "/users/top", UserController, :top, as: :top
     get "/users/:id", UserController, :show, as: :users
+    get "/spaced users/:id", UserController, :show
     get "/profiles/profile-:id", UserController, :show
     get "/route_that_crashes", UserController, :crash
     get "/files/:user_name/*path", UserController, :image
@@ -66,6 +66,17 @@ defmodule Phoenix.Router.RoutingTest do
     assert conn.params["id"] == "1"
   end
 
+  test "parameters are url decoded" do
+    conn = call(Router, :get, "/users/hello%20matey")
+    assert conn.params == %{"id" => "hello matey"}
+
+    conn = call(Router, :get, "/spaced%20users/hello%20matey")
+    assert conn.params == %{"id" => "hello matey"}
+
+    conn = call(Router, :get, "/spaced users/hello matey")
+    assert conn.params == %{"id" => "hello matey"}
+  end
+
   test "get to custom action" do
     conn = call(Router, :get, "users/top")
     assert conn.status == 200
@@ -107,6 +118,12 @@ defmodule Phoenix.Router.RoutingTest do
     conn = call(Router, :get, "static/images/icons/elixir/logos/main.png")
     assert conn.status == 200
     assert conn.params["image"] == ["elixir", "logos", "main.png"]
+  end
+
+  test "splat args are %encodings in path" do
+    conn = call(Router, :get, "backups/silly%20name")
+    assert conn.status == 200
+    assert conn.params["path"] == ["silly name"]
   end
 
   test "catch-all splat route matches" do

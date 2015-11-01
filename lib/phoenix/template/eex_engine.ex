@@ -6,15 +6,20 @@ defmodule Phoenix.Template.EExEngine do
   @behaviour Phoenix.Template.Engine
 
   def compile(path, name) do
-    path
-    |> File.read!
-    |> EEx.compile_string(engine: engine_for(name), file: path, line: 1)
+    EEx.compile_file(path, engine: engine_for(name), line: 1)
   end
 
   defp engine_for(name) do
     case Phoenix.Template.format_encoder(name) do
-      Phoenix.HTML.Engine -> Phoenix.HTML.Engine
-      _                   -> EEx.SmartEngine
+      Phoenix.Template.HTML ->
+        unless Code.ensure_loaded?(Phoenix.HTML.Engine) do
+          raise "Could not load Phoenix.HTML.Engine to use with .html.eex templates. " <>
+                "You can configure your own format encoder for HTML but we recommend " <>
+                "adding phoenix_html as a dependency as it provides XSS protection."
+        end
+        Phoenix.HTML.Engine
+      _ ->
+        EEx.SmartEngine
     end
   end
 end

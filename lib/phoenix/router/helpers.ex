@@ -3,9 +3,100 @@ defmodule Phoenix.Router.Helpers do
   @moduledoc false
 
   alias Phoenix.Router.Route
+  alias Phoenix.Socket
   alias Plug.Conn
 
-  @transports [Phoenix.Transports.WebSocket, Phoenix.Transports.LongPoller]
+  @doc """
+  Callback invoked by url generated in each helper module.
+  """
+  def url(_router, %Conn{private: private}) do
+    private.phoenix_endpoint.url
+  end
+
+  def url(_router, %Socket{endpoint: endpoint}) do
+    endpoint.url
+  end
+
+  def url(_router, %URI{} = uri) do
+    uri_to_string(uri)
+  end
+
+  def url(_router, endpoint) when is_atom(endpoint) do
+    endpoint.url
+  end
+
+  @doc """
+  Callback invoked by path generated in each helper module.
+  """
+  def path(router, %Conn{} = conn, path) do
+    conn
+    |> build_own_forward_path(router, path)
+    |> Kernel.||(build_conn_forward_path(conn, router, path))
+    |> Kernel.||(path_with_script(path, conn.script_name))
+  end
+
+  def path(_router, %URI{} = uri, path) do
+    (uri.path || "") <> path
+  end
+
+  def path(_router, %Socket{endpoint: endpoint}, path) do
+    endpoint.path(path)
+  end
+
+  def path(_router, endpoint, path) when is_atom(endpoint) do
+    endpoint.path(path)
+  end
+
+  ## Helpers
+
+  defp uri_to_string(uri) do
+    scheme = uri.scheme
+
+    if scheme && (port = URI.default_port(scheme)) do
+      if uri.port == port, do: uri = %{uri | port: nil}
+    end
+
+    if uri.host do
+      authority = uri.host
+      if uri.userinfo, do: authority = uri.userinfo <> "@" <> authority
+      if uri.port, do: authority = authority <> ":" <> Integer.to_string(uri.port)
+    else
+      authority = uri.authority
+    end
+
+    result = ""
+    if uri.scheme, do: result = result <> uri.scheme <> ":"
+    if authority,  do: result = result <> "//" <> authority
+    result
+  end
+
+  defp build_own_forward_path(conn, router, path) do
+    case Map.fetch(conn.private, router) do
+      {:ok, {local_script, _}} ->
+        path_with_script(path, local_script)
+      :error -> nil
+    end
+  end
+
+  defp build_conn_forward_path(%Conn{private: %{phoenix_router: phx_router}} = conn, router, path) do
+    case Map.fetch(conn.private, phx_router) do
+      {:ok, {script_name, forwards}} ->
+        case Map.fetch(forwards, router) do
+          {:ok, local_script} ->
+            path_with_script(path, script_name ++ local_script)
+          :error -> nil
+        end
+      :error -> nil
+    end
+  end
+  defp build_conn_forward_path(_conn, _router, _path), do: nil
+
+  defp path_with_script(path, []) do
+    path
+  end
+  defp path_with_script(path, script) do
+    "/" <> Enum.join(script, "/") <> path
+  end
 
   @doc """
   Generates the helper module for the given environment and routes.
@@ -31,57 +122,55 @@ defmodule Phoenix.Router.Helpers do
       @doc """
       Generates the connection/endpoint base URL without any path information.
       """
-      def url(%Conn{private: private}) do
-        private.phoenix_endpoint.url
-      end
-      def url(endpoint) when is_atom(endpoint) do
-        endpoint.url
+      def url(data) do
+        Phoenix.Router.Helpers.url(unquote(env.module), data)
       end
 
       @doc """
       Generates the path information including any necessary prefix.
       """
-      def path(%{script_name: []}, path) do
-        path
-      end
-
-      def path(%{script_name: [_|_] = script}, path) do
-        "/" <> Enum.join(script, "/") <> path
-      end
-
-      def path(endpoint, path) do
-        endpoint.path(path)
+      def path(data, path) do
+        Phoenix.Router.Helpers.path(unquote(env.module), data, path)
       end
 
       @doc """
       Generates path to a static asset given its file path.
-
-      It expects either a conn or an endpoint.
       """
       def static_path(%Conn{private: private} = conn, path) do
         private.phoenix_endpoint.static_path(path)
       end
+
+      def static_path(%Socket{endpoint: endpoint} = conn, path) do
+        endpoint.static_path(path)
+      end
+
       def static_path(endpoint, path) when is_atom(endpoint) do
         endpoint.static_path(path)
       end
 
       @doc """
       Generates url to a static asset given its file path.
-
-      It expects either a conn or an endpoint.
       """
       def static_url(%Conn{private: private} = conn, path) do
         static_url(private.phoenix_endpoint, path)
       end
-      def static_url(endpoint, path) do
-        endpoint.url <> endpoint.static_path(path)
+
+      def static_url(%Socket{endpoint: endpoint} = conn, path) do
+        static_url(endpoint, path)
+      end
+
+      def static_url(endpoint, path) when is_atom(endpoint) do
+        endpoint.static_url <> endpoint.static_path(path)
       end
 
       # Functions used by generated helpers
+      # Those are inlined here for performance
 
       defp to_param(int) when is_integer(int), do: Integer.to_string(int)
       defp to_param(bin) when is_binary(bin), do: bin
-      defp to_param(oth), do: Phoenix.Param.to_param(oth)
+      defp to_param(false), do: "false"
+      defp to_param(true), do: "true"
+      defp to_param(data), do: Phoenix.Param.to_param(data)
 
       defp segments(segments, [], _reserved) do
         segments
@@ -92,7 +181,7 @@ defmodule Phoenix.Router.Helpers do
                not (k = to_string(k)) in reserved,
                do: {k, v}
 
-        case Conn.Query.encode dict do
+        case Conn.Query.encode dict, &to_param/1 do
           "" -> segments
           o  -> segments <> "?" <> o
         end
@@ -106,33 +195,33 @@ defmodule Phoenix.Router.Helpers do
   @doc """
   Receives a route and returns the quoted definition for its helper function.
 
-  In case a helper name was not given, returns nil.
+  In case a helper name was not given, or route is forwarded, returns nil.
   """
   def defhelper(%Route{helper: nil}, _exprs), do: nil
-
+  def defhelper(%Route{kind: :forward}, _exprs), do: nil
   def defhelper(%Route{} = route, exprs) do
     helper = route.helper
-    action = route.action
+    opts = route.opts
 
     {bins, vars} = :lists.unzip(exprs.binding)
     segs = expand_segments(exprs.path)
 
     # We are using -1 to avoid warnings in case a path has already been defined.
     quote line: -1 do
-      def unquote(:"#{helper}_path")(conn_or_endpoint, unquote(action), unquote_splicing(vars)) do
-        unquote(:"#{helper}_path")(conn_or_endpoint, unquote(action), unquote_splicing(vars), [])
+      def unquote(:"#{helper}_path")(conn_or_endpoint, unquote(opts), unquote_splicing(vars)) do
+        unquote(:"#{helper}_path")(conn_or_endpoint, unquote(opts), unquote_splicing(vars), [])
       end
 
-      def unquote(:"#{helper}_path")(conn_or_endpoint, unquote(action), unquote_splicing(vars), params) do
+      def unquote(:"#{helper}_path")(conn_or_endpoint, unquote(opts), unquote_splicing(vars), params) do
         path(conn_or_endpoint, segments(unquote(segs), params, unquote(bins)))
       end
 
-      def unquote(:"#{helper}_url")(conn_or_endpoint, unquote(action), unquote_splicing(vars)) do
-        unquote(:"#{helper}_url")(conn_or_endpoint, unquote(action), unquote_splicing(vars), [])
+      def unquote(:"#{helper}_url")(conn_or_endpoint, unquote(opts), unquote_splicing(vars)) do
+        unquote(:"#{helper}_url")(conn_or_endpoint, unquote(opts), unquote_splicing(vars), [])
       end
 
-      def unquote(:"#{helper}_url")(conn_or_endpoint, unquote(action), unquote_splicing(vars), params) do
-        url(conn_or_endpoint) <> unquote(:"#{helper}_path")(conn_or_endpoint, unquote(action), unquote_splicing(vars), params)
+      def unquote(:"#{helper}_url")(conn_or_endpoint, unquote(opts), unquote_splicing(vars), params) do
+        url(conn_or_endpoint) <> unquote(:"#{helper}_path")(conn_or_endpoint, unquote(opts), unquote_splicing(vars), params)
       end
     end
   end
@@ -151,39 +240,4 @@ defmodule Phoenix.Router.Helpers do
     do: expand_segments(t, quote(do: unquote(acc) <> "/" <> to_param(unquote(h))))
   defp expand_segments([], acc),
     do: acc
-
-  @doc """
-  Receives the `@channels` accumulated module attribute and returns an AST of
-  `match_channel` definitions
-  """
-  def defchannels(channels) do
-    channels_ast = for {topic_pattern, module, opts} <- channels do
-      topic_pattern
-      |> to_topic_match
-      |> defchannel(module, opts[:via] || @transports)
-    end
-
-    quote do
-      unquote(channels_ast)
-      def channel_for_topic(_topic, _transport), do: nil
-    end
-  end
-
-  defp to_topic_match(topic_pattern) do
-    case String.split(topic_pattern, "*") do
-      [prefix, ""] -> quote do: <<unquote(prefix) <> _rest>>
-      [bare_topic] -> bare_topic
-      _            -> raise ArgumentError, "channels using splat patterns must end with *"
-    end
-  end
-
-  defp defchannel(topic_match, channel_module, transports) do
-    quote do
-      def channel_for_topic(unquote(topic_match), transport)
-        when transport in unquote(transports) do
-
-        unquote(channel_module)
-      end
-    end
-  end
 end

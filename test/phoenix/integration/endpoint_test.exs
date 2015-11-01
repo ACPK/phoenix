@@ -1,10 +1,7 @@
-Code.require_file "http_client.exs", __DIR__
+Code.require_file "../../support/http_client.exs", __DIR__
 
 defmodule Phoenix.Integration.EndpointTest do
-  # This test case needs to be sync because we rely on
-  # log capture which is global.
   use ExUnit.Case
-  import RouterHelper, only: [capture_log: 1]
 
   alias Phoenix.Integration.AdapterTest.ProdEndpoint
   alias Phoenix.Integration.AdapterTest.DevEndpoint
@@ -14,7 +11,24 @@ defmodule Phoenix.Integration.EndpointTest do
   Application.put_env(:endpoint_int, DevEndpoint,
       http: [port: "4808"], debug_errors: true)
 
+  defp capture_log(fun) do
+    RouterHelper.capture_log(fn ->
+      fun.()
+
+      # Let's monitor the connection process.
+      # When it is DOWN, we are sure the error
+      # message has been logged. Otherwise the
+      # build can fail due to race conditions.
+      pid = Application.get_env(:phoenix, :integration_endpoint_pid)
+      ref = Process.monitor(pid)
+      assert_receive {:DOWN, ^ref, _, _, _}
+    end)
+  end
+
   defmodule Router do
+    @moduledoc """
+    Let's use a plug router to test this endpoint.
+    """
     use Plug.Router
 
     plug :match
@@ -32,8 +46,19 @@ defmodule Phoenix.Integration.EndpointTest do
     match _ do
       raise Phoenix.Router.NoRouteError, conn: conn, router: __MODULE__
     end
+  end
 
-    # A wrapper to around the endpoint call to extract information.
+  defmodule Wrapper do
+    @moduledoc """
+    A wrapper around the endpoint call to extract information.
+
+    This exists so we can verify that the exception handling
+    in the Phoenix endpoint is working as expected. In order
+    to do that, we need to wrap the endpoint.call/2 in a
+    before compile callback so it wraps the whole stack,
+    including render errors and debug errors functionality.
+    """
+
     defmacro __before_compile__(_) do
       quote do
         defoverridable [call: 2]
@@ -41,6 +66,9 @@ defmodule Phoenix.Integration.EndpointTest do
         def call(conn, opts) do
           # Assert we never have a lingering sent message in the inbox
           refute_received {:plug_conn, :sent}
+
+          # We store the current process so we can syncronize the log message
+          Application.put_env(:phoenix, :integration_endpoint_pid, self())
 
           try do
             super(conn, opts)
@@ -59,14 +87,20 @@ defmodule Phoenix.Integration.EndpointTest do
   for mod <- [ProdEndpoint, DevEndpoint] do
     defmodule mod do
       use Phoenix.Endpoint, otp_app: :endpoint_int
-      plug :router, Router
-      @before_compile Router
+      @before_compile Wrapper
 
-      def call(conn, opts) do
+      plug :oops
+      plug Router
+
+      @doc """
+      Verify errors from the plug stack too (before the router).
+      """
+      def oops(conn, _opts) do
         if conn.path_info == ~w(oops) do
           raise "oops"
+        else
+          conn
         end
-        super(conn, opts)
       end
     end
   end
@@ -144,14 +178,9 @@ defmodule Phoenix.Integration.EndpointTest do
 
   defp shutdown(endpoint) do
     pid = Process.whereis(endpoint)
+    ref = Process.monitor(pid)
     Process.unlink(pid)
     Process.exit(pid, :shutdown)
-    wait_until_dead(endpoint)
-  end
-
-  defp wait_until_dead(endpoint) do
-    if Process.whereis(endpoint) do
-      wait_until_dead(endpoint)
-    end
+    receive do: ({:DOWN, ^ref, _, _, _} -> :ok)
   end
 end

@@ -1,56 +1,56 @@
 defmodule Phoenix.Mixfile do
   use Mix.Project
 
+  @version "1.0.3"
+
   def project do
     [app: :phoenix,
-     version: "0.11.0-dev",
-     elixir: "~> 1.0.2 or ~> 1.1-dev",
+     version: @version,
+     elixir: "~> 1.0.2 or ~> 1.1-beta",
      deps: deps,
      package: package,
-     docs: &docs/0,
+     docs: [source_ref: "v#{@version}", main: "Phoenix", logo: "logo.png"],
      name: "Phoenix",
      source_url: "https://github.com/phoenixframework/phoenix",
      homepage_url: "http://www.phoenixframework.org",
      description: """
-     Elixir Web Framework targeting full-featured, fault tolerant applications
-     with realtime functionality
+     Productive. Reliable. Fast. A productive web framework that
+     does not compromise speed and maintainability.
      """]
   end
 
   def application do
     [mod: {Phoenix, []},
      applications: [:plug, :poison, :logger, :eex],
-     env: [template_engines: [],
+     env: [stacktrace_depth: nil,
+           template_engines: [],
            format_encoders: [],
+           generators: [],
            filter_parameters: ["password"],
-           serve_endpoints: false]]
+           serve_endpoints: false,
+           gzippable_exts: ~w(.js .css .txt .text .html .json)]]
   end
 
   defp deps do
     [{:cowboy, "~> 1.0", optional: true},
-     {:plug, "~> 0.11.0"},
+     {:plug, "~> 1.0"},
      {:poison, "~> 1.3"},
-     {:redo, github: "heroku/redo", optional: true},
-     {:poolboy, "~> 1.4.2", optional: true},
 
      # Docs dependencies
      {:earmark, "~> 0.1", only: :docs},
-     {:ex_doc, "~> 0.7.1", only: :docs},
+     {:ex_doc, "~> 0.10", only: :docs},
      {:inch_ex, "~> 0.2", only: :docs},
 
      # Test dependencies
-     {:websocket_client, github: "jeremyong/websocket_client", only: :test}]
+     {:phoenix_html, "~> 1.2", only: :test},
+     {:websocket_client, git: "https://github.com/jeremyong/websocket_client.git", only: :test}]
   end
 
   defp package do
     [contributors: ["Chris McCord", "Darko Fabijan", "José Valim"],
      licenses: ["MIT"],
-     links: %{github: "https://github.com/phoenixframework/phoenix"}]
-  end
-
-  defp docs do
-    {ref, 0} = System.cmd("git", ["rev-parse", "--verify", "--quiet", "HEAD"])
-    [source_ref: ref,
-     main: "overview"]
+     links: %{github: "https://github.com/phoenixframework/phoenix"},
+     files: ~w(lib priv test/shared web) ++
+            ~w(brunch-config.js CHANGELOG.md LICENSE mix.exs package.json README.md)]
   end
 end

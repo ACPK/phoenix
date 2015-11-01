@@ -45,7 +45,7 @@ defmodule Phoenix.TemplateTest do
   end
 
   test "format_encoder/1 returns the formatter for a given template" do
-    assert Template.format_encoder("hello.html") == Phoenix.HTML.Engine
+    assert Template.format_encoder("hello.html") == Phoenix.Template.HTML
     assert Template.format_encoder("hello.unknown") == nil
   end
 
@@ -53,7 +53,6 @@ defmodule Phoenix.TemplateTest do
 
   defmodule View do
     use Phoenix.Template, root: Path.join(__DIR__, "../fixtures/templates")
-    import Phoenix.HTML
 
     def render("user.json", %{name: name}) do
       %{id: 123, name: name}
@@ -66,7 +65,7 @@ defmodule Phoenix.TemplateTest do
   end
 
   test "render eex templates sanitizes against xss by default" do
-    assert View.render("show.html") ==
+    assert View.render("show.html", message: "") ==
            {:safe, [[[["" | "<div>Show! "] | ""] | "</div>\n"] | "\n"]}
 
     assert View.render("show.html", message: "<script>alert('xss');</script>") ==
@@ -106,4 +105,3 @@ defmodule Phoenix.TemplateTest do
     refute View.__phoenix_recompile__?
   end
 end
-

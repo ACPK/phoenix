@@ -1,38 +1,62 @@
 defmodule Phoenix.Endpoint.CowboyWebSocket do
+  # Implementation of the WebSocket transport for Cowboy.
   @moduledoc false
+
   @behaviour :cowboy_websocket_handler
+  @connection Plug.Adapters.Cowboy.Conn
+  @already_sent {:plug_conn, :sent}
 
-  def call(conn, args) do
-    resume(conn, :cowboy_websocket, :upgrade, args)
-  end
-
-  def resume(conn, module, fun, args) do
-    try do
-      apply(module, fun, args)
-    catch
-      class, [{:reason, reason}, {:mfa, _mfa}, {:stacktrace, stack} | _rest] ->
-        exit(class, reason, stack, conn)
-    else
-      {:ok, _req, _env} = ok ->
-        ok
-      {:suspend, module, fun, args} ->
-        {:suspend, __MODULE__, :resume, [conn, module, fun, args]}
-      {:stop, _req} = stop ->
-        stop
+  def init({transport, :http}, req, {module, opts}) when transport in [:tcp, :ssl] do
+    conn = @connection.conn(req, transport)
+    case module.init(conn, opts) do
+      {:ok, %{adapter: {@connection, req}}, args} ->
+        {:upgrade, :protocol, __MODULE__, req, args}
+      {:error, %{adapter: {@connection, req}}} ->
+        {:shutdown, req, :no_state}
+    end
+  after
+    receive do
+      @already_sent -> :ok
+    after
+      0 -> :ok
     end
   end
 
-  defp exit(class, reason, stack, conn) do
-    reason2 = format_reason(class, reason, stack)
-    exit({reason2, {__MODULE__, :call, [conn, []]}})
+  def upgrade(req, env, __MODULE__, {handler, opts}) do
+    args = [req, env, __MODULE__, {handler, opts}]
+    resume(:cowboy_websocket, :upgrade, args)
+  end
+
+  def terminate(_reason,  _req, _state) do
+    :ok
+  end
+
+  def resume(module, fun, args) do
+    try do
+      apply(module, fun, args)
+    catch
+      kind, [{:reason, reason}, {:mfa, _mfa}, {:stacktrace, stack} | _rest] ->
+        reason = format_reason(kind, reason, stack)
+        exit({reason, {__MODULE__, :resume, []}})
+    else
+      {:suspend, module, fun, args} ->
+        {:suspend, __MODULE__, :resume, [module, fun, args]}
+      _ ->
+        # We are forcing a shutdown exit because we want to make
+        # sure all transports exits with reason shutdown to guarantee
+        # all channels are closed.
+        exit(:shutdown)
+    end
   end
 
   defp format_reason(:exit, reason, _), do: reason
   defp format_reason(:throw, reason, stack), do: {{:nocatch, reason}, stack}
   defp format_reason(:error, reason, stack), do: {reason, stack}
 
-  def websocket_init(_transport, req, {handler, conn}) do
-    {:ok, state, timeout} = handler.ws_init(conn)
+  ## Websocket callbacks
+
+  def websocket_init(_transport, req, {handler, args}) do
+    {:ok, state, timeout} = handler.ws_init(args)
     {:ok, :cowboy_req.compact(req), {handler, state}, timeout}
   end
 
@@ -46,25 +70,31 @@ defmodule Phoenix.Endpoint.CowboyWebSocket do
     {:ok, req, {handler, state}}
   end
 
-  def websocket_info({:reply, {opcode, payload}}, req, state) do
-    {:reply, {opcode, payload}, req, state}
-  end
-  def websocket_info(:shutdown, req, state) do
-    {:shutdown, req, state}
-  end
-  def websocket_info(:hibernate, req, {handler, state}) do
-    {:ok, req, {handler, state}, :hibernate}
-  end
   def websocket_info(message, req, {handler, state}) do
     handle_reply req, handler, handler.ws_info(message, state)
   end
 
+  def websocket_terminate({:error, :closed}, _req, {handler, state}) do
+    handler.ws_close(state)
+    :ok
+  end
+  def websocket_terminate({:remote, :closed}, _req, {handler, state}) do
+    handler.ws_close(state)
+    :ok
+  end
+  def websocket_terminate({:remote, code, _}, _req, {handler, state})
+      when code in 1000..1003 or code in 1005..1011 or code == 1015 do
+    handler.ws_close(state)
+    :ok
+  end
   def websocket_terminate(reason, _req, {handler, state}) do
-    :ok = handler.ws_terminate(reason, state)
+    handler.ws_terminate(reason, state)
     :ok
   end
 
-
+  defp handle_reply(req, handler, {:shutdown, new_state}) do
+    {:shutdown, req, {handler, new_state}}
+  end
   defp handle_reply(req, handler, {:ok, new_state}) do
     {:ok, req, {handler, new_state}}
   end

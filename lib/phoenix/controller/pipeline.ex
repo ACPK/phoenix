@@ -12,8 +12,6 @@ defmodule Phoenix.Controller.Pipeline do
         require Logger
 
         plug :log_message, "before action"
-        plug :action
-        plug :log_message, "after action"
 
         def show(conn, _params) do
           Logger.debug "show/2"
@@ -30,7 +28,6 @@ defmodule Phoenix.Controller.Pipeline do
 
       before action
       show/2
-      after action
 
   As any other Plug pipeline, we can halt at any step by calling
   `Plug.Conn.halt/1` (which is by default imported into controllers).
@@ -53,11 +50,10 @@ defmodule Phoenix.Controller.Pipeline do
   `plug/2` supports guards, allowing a developer to configure a plug to only
   run in some particular action:
 
-      plug :log_message, "before action" when action in [:show, :edit]
-      plug :action
-      plug :log_message, "after action" when not action in [:index]
+      plug :log_message, "before show and edit" when action in [:show, :edit]
+      plug :log_message, "before all but index" when not action in [:index]
 
-  The first plug will run only when action is show and edit.
+  The first plug will run only when action is show or edit.
   The second plug will always run, except for the index action.
 
   Those guards work like regular Elixir guards and the only variables accessible
@@ -84,7 +80,7 @@ defmodule Phoenix.Controller.Pipeline do
   As controllers are plugs, they implement both `init/1` and
   `call/2`, and it also provides a function named `action/2`
   which is responsible for dispatching the appropriate action
-  in the middle of the plug stack (and is also overridable).
+  after the plug stack (and is also overridable).
   """
 
   @doc false
@@ -117,18 +113,44 @@ defmodule Phoenix.Controller.Pipeline do
 
   @doc false
   defmacro __before_compile__(env) do
-    plugs = Module.get_attribute(env.module, :plugs)
-    {conn, body} = Plug.Builder.compile(plugs)
+    action = {:action, [], true}
+    plugs  = [action|Module.get_attribute(env.module, :plugs)]
+    {conn, body} = Plug.Builder.compile(env, plugs, log_on_halt: :debug)
+
     quote do
+      defoverridable [action: 2]
+
+      def action(conn, opts) do
+        try do
+          super(conn, opts)
+        catch
+          kind, reason ->
+            Phoenix.Controller.Pipeline.__catch__(
+              kind, reason, __MODULE__, conn.private.phoenix_action, System.stacktrace
+            )
+        end
+      end
+
       defp phoenix_controller_pipeline(unquote(conn), var!(action)) do
         var!(conn) = unquote(conn)
         var!(controller) = __MODULE__
         _ = var!(conn)
         _ = var!(controller)
         _ = var!(action)
+
         unquote(body)
       end
     end
+  end
+
+  @doc false
+  def __catch__(:error, :function_clause, controller, action,
+                [{controller, action, [%Plug.Conn{} | _], _loc} | _] = stack) do
+    args = [controller: controller, action: action]
+    reraise Phoenix.ActionClauseError, args, stack
+  end
+  def __catch__(kind, reason, _controller, _action, stack) do
+    :erlang.raise(kind, reason, stack)
   end
 
   @doc """

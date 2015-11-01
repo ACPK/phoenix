@@ -3,15 +3,22 @@
 
 defmodule Phoenix.Router.PipelineTest.SampleController do
   use Phoenix.Controller
-  plug :action
   def index(conn, _params), do: text(conn, "index")
   def crash(_conn, _params), do: raise "crash!"
+
+  # Let's also define a custom plug that we will
+  # use in our router as part of a pipeline
+  def noop_plug(conn, _opts), do: conn
 end
 
 alias Phoenix.Router.PipelineTest.SampleController
 
 defmodule Phoenix.Router.PipelineTest.Router do
   use Phoenix.Router
+
+  # This should work even if the import comes
+  # after the Phoenix.Router definition
+  import SampleController, only: [noop_plug: 2]
 
   pipeline :browser do
     plug :put_assign, "browser"
@@ -23,6 +30,14 @@ defmodule Phoenix.Router.PipelineTest.Router do
 
   pipeline :params do
     plug :put_params
+  end
+
+  pipeline :halt do
+    plug :stop
+  end
+
+  pipeline :halt_again do
+    plug :stop
   end
 
   get "/root", SampleController, :index
@@ -47,6 +62,15 @@ defmodule Phoenix.Router.PipelineTest.Router do
   scope "/browser-api" do
     pipe_through [:browser, :api]
     get "/root", SampleController, :index
+  end
+
+  scope "/stop" do
+    pipe_through [:noop_plug, :halt, :halt_again]
+    get "/", SampleController, :index
+  end
+
+  defp stop(conn, _) do
+    conn |> send_resp(200, "stop") |> halt
   end
 
   defp put_assign(conn, value) do
@@ -93,6 +117,13 @@ defmodule Phoenix.Router.PipelineTest do
     assert conn.assigns[:stack] == "api"
   end
 
+  test "halts on pipeline multiple pipelines" do
+    conn = call(Router, :get, "/stop")
+    assert conn.halted
+    assert conn.status == 200
+    assert conn.resp_body == "stop"
+  end
+
   test "wraps failures on call" do
     assert_raise Plug.Conn.WrapperError, fn ->
       call(Router, :get, "/route_that_crashes")
@@ -102,21 +133,5 @@ defmodule Phoenix.Router.PipelineTest do
   test "merge parameters before invoking pipelines" do
     conn = call(Router, :get, "/browser/hello")
     assert conn.assigns[:params] == %{"id" => "hello"}
-  end
-
-  test "invalid pipelines" do
-    assert_raise ArgumentError, ~r"unknown pipeline :unknown", fn ->
-      defmodule ErrorRouter do
-        use Phoenix.Router
-        pipe_through :unknown
-      end
-    end
-
-    assert_raise ArgumentError, ~r"the :before pipeline is always piped through", fn ->
-      defmodule ErrorRouter do
-        use Phoenix.Router
-        pipe_through :before
-      end
-    end
   end
 end

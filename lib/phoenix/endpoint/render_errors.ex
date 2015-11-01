@@ -1,7 +1,7 @@
 defmodule Phoenix.Endpoint.RenderErrors do
   # This module is used to catch failures and render them using a view.
   #
-  # This module is automatically used in `Phoenix.Router` where it
+  # This module is automatically used in `Phoenix.Endpoint` where it
   # overrides `call/2` to provide rendering. Once the error is
   # rendered, the error is reraised unless it is a NoRouteError.
   #
@@ -64,16 +64,23 @@ defmodule Phoenix.Endpoint.RenderErrors do
   # Made public with @doc false for testing.
   @doc false
   def render(conn, kind, reason, stack, opts) do
-    reason = Exception.normalize(kind, reason, stack)
-    format = format(conn, opts)
-    status = status(kind, reason)
-    format = "#{status}.#{format}"
+    conn = fetch_query_params(conn)
 
-    conn
-    |> put_layout(false)
-    |> put_view(opts[:view])
-    |> put_status(status)
-    |> render(format, %{kind: kind, reason: reason, stack: stack})
+    case fetch_format(conn, opts) do
+      %{halted: true} = conn ->
+        conn
+      conn ->
+        reason = Exception.normalize(kind, reason, stack)
+        format = get_format(conn)
+        status = status(kind, reason)
+        format = "#{status}.#{format}"
+
+        conn
+        |> put_layout(false)
+        |> put_view(opts[:view])
+        |> put_status(status)
+        |> render(format, %{kind: kind, reason: reason, stack: stack})
+    end
   end
 
   defp maybe_render(conn, kind, reason, stack, opts) do
@@ -87,10 +94,10 @@ defmodule Phoenix.Endpoint.RenderErrors do
     end
   end
 
-  defp format(conn, opts) do
-    case conn.params do
-      %{"format" => format} -> format
-      _ -> Keyword.get(opts, :format, "html")
+  defp fetch_format(conn, opts) do
+    case get_format(conn) do
+      format when is_binary(format) -> conn
+      _ -> conn |> fetch_query_params |> accepts(Keyword.fetch!(opts, :accepts))
     end
   end
 

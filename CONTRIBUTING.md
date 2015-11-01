@@ -2,6 +2,7 @@
 
 Please take a moment to review this document in order to make the contribution
 process easy and effective for everyone involved!
+Also make sure you read our [Code of Conduct](CODE_OF_CONDUCT.md) that outlines our commitment towards an open and welcoming environment.
 
 ## Using the issue tracker
 
@@ -102,23 +103,7 @@ give a user a quick idea of what the documented "thing" does/is. The rest of the
 documentation string can contain the details, for example when a value and when
 `nil` is returned.
 
-If possible include examples, preferably in a form that works with doctests. For
-example:
-
-```elixir
-defmodule Phoenix.Socket do
-...
-  @doc """
-  Adds authorized channel/topic pair to Socket's channel list
-
-  ## Examples
-
-      iex> Socket.authorize(%Socket{}, "rooms", "lobby")
-      %Socket{channel: "rooms", topic: "lobby", authorized: true}
-  """
-  def authorize(socket, channel, topic) do ...
-```
-
+If possible include examples, preferably in a form that works with doctests.
 This makes it easy to test the examples so that they don't go stale and examples
 are often a great help in explaining what a function does.
 
@@ -153,11 +138,12 @@ in order to craft an excellent pull request:
    git remote add upstream https://github.com/phoenixframework/phoenix
    ```
 
-2. If you cloned a while ago, get the latest changes from upstream:
+2. If you cloned a while ago, get the latest changes from upstream, and update your fork:
 
    ```bash
    git checkout master
    git pull upstream master
+   git push
    ```
 
 3. Create a new topic branch (off of `master`) to contain your feature, change,

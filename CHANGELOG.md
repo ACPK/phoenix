@@ -1,12 +1,268 @@
 # Changelog
 
-## v0.11.0-dev
+## 1.0.3 (2015-9-28)
+
+* Enhancements
+  * [Controller] Transform FunctionClauseError's from controller actions into ActionClauseError, and send 400 response
+  * [Router] Allow plugs to be passed to `pipe_through`
+  * [Channel] WebSocket transport now sends server heartbeats and shutdowns if client heartbeats stop. Fixes timeout issues when clients keep connection open, but hang with suspended js runtimes
+
+* JavaScript client deprecations
+  * Passing params to socket.connect() has been deprecated in favor of the `:params` option of the Socket constructor
+
+## 1.0.2 (2015-9-6)
+
+* Enhancements
+  * [Installer] Support `--database mongodb` when generating new apps
+  * [Installer] Support `binary_id` and `migration` configuration for models
+
+* Bug fixes
+  * [Digest] Ensure Phoenix app is loaded before digesting
+  * [Generator] Ensure proper keys are generated in JSON views and tests
+  * [Generator] Ensure proper titles are generated in HTML views and tests
+  * [Mix] Ensure app is compiled before showing routes with `mix phoenix.routes`
+  * [Token] Ensure max age is counted in seconds and not in miliseconds
+
+## 1.0.1 (2015-9-3)
+
+* Enhancements
+  * [Controller] `phoenix.gen.json` generator now excludes `:new` and `:edit` actions
+  * [Endpoint] Set hostname to "localhost" by default for dev and test
+  * [ConnTest] Support multiple json mime types in `json_response/2`
+
+## 1.0.0 (2015-8-28) 🚀
+
+## v0.17.1 (2015-8-26)
+
+* Enhancements
+  * [ChannelTest] Add `connect/2` helper for test UserSocket handlers
+  * [Endpoint] Expose `struct_url/0` in the endpoint that returns the URL as struct for further manipulation
+  * [Router] Allow `URI` structs to be given to generated `url/1` and `path/2` helpers
+
+* Bug fixes
+  * [Endpoint] Pass port configuration when configuring force_ssl
+  * [Mix] By default include all attributes in generated JSON views
+  * [Router] Fix `pipe_through` not respecting halting when piping through mulitple pipelines
+
+## v0.17.0 (2015-8-19)
+
+See these [`0.16.x` to `0.17.0` upgrade instructions](https://gist.github.com/chrismccord/ee5ae90b949a9768b871) to bring your existing apps up to speed.
+
+* Enhancements
+  * [Endpoint] Allow `check_origin` and `force_ssl` to be config in transports and fallback to endpoint config
+  * [Transport] Log when `check_origin` fails
+
+* Bug fixes
+  * [Mix] Properly humanize names in the generator
+
+* Deprecations
+  * [Endpoint] `render_errors: [default_format: "html"]` is deprecated in favor of `render_errors: [accepts: ["html"]]`
+
+* Backward incompatible changes
+  * [Controller] The "format" param for overriding the accept header has been renamed to "_format" and is no longer injected into the params when parsing the Accept headers. Use `get_format/1` to access the negotiated format.
+  * [ChannelTest] In order to test channels, one must now explicitly create a socket and pass it to `subscribe_and_join`. For example, `subscribe_and_join(MyChannel, "my_topic")` should now become `socket() |> subscribe_and_join(MyChannel, "my_topic")` or `socket("user:id", %{user_id: 13}) |> subscribe_and_join(MyChannel, "my_topic")`.
+
+## v0.16.1 (2015-8-6)
+
+* JavaScript client bug fixes
+  * Pass socket params on reconnect
+
+## v0.16.0 (2015-8-5)
+
+See these [`0.15.x` to `0.16.0` upgrade instructions](https://gist.github.com/chrismccord/969d75d1562979a3ae37) to bring your existing apps up to speed.
+
+* Enhancements
+  * [Brunch] No longer ship with `sass-brunch` dependency
+  * [Endpoint] Add `force_ssl` support
+  * [Mix] Allow `phoenix.gen.*` tasks templates to be customized by the target application by placing copies at `priv/template/phoenix.gen.*`
+  * [Mix] Support `mix phoenix.gen.model Comment comment post_id:references:posts`
+  * [Mix] Add `mix phoenix.gen.secret`
+  * [Router] Provide `put_secure_browser_headers/2` and use it by default in the browser pipeline
+  * [Socket] Automatically check origins on socket transports
+  * [Token] Add `Phoenix.Token` for easy signing and verification of tokens
+
+* Bug fixes
+  * [Cowboy] Ensure we print proper URL when starting the server with both http and https
+  * [Digest] Do not gzip binary files like png and jpg. Default only to known text files and make them configurable via `config :phoenix, :gzippable_exts, ~w(.txt .html .js .css)` and so on
+
+* Backward incompatible changes
+  * [Controller] `jsonp/3` function has been removed in favor of the `plug :allow_jsonp`
+  * [Controller] `controller_template/1` has been renamed to `view_template/1`
+  * [HTML] Use `phoenix_html ~> 2.0` which includes its own `phoenix_html.js` version
+  * [Socket] `:origins` transport option has been renamed to `:check_origin`
+  * [View] `render_one` and `render_many` no longer inflect the view module from the model in favor of explicitly passing the view
+
+* JavaScript client backwards incompatible changes
+  * Socket params are now passed to `socket.connect()` instead of an option on the constructor.
+  * Socket params are no longer merged as default params for channel params. Use `connect/2` on the server to wire up default channel assigns.
+  * Socket `chan` has been renamed to `channel`, for example `socket.channel("some:topic")`
+
+## v0.15.0 (2015-7-27)
+
+See these [`0.14.x` to `0.15.0` upgrade instructions](https://gist.github.com/chrismccord/931373940f320bf41a50) to bring your existing apps up to speed.
+
+* Enhancements
+  * [Socket] Introduce `Phoenix.Socket` behaviour that allows socket authentication, termination, and default channel socket assigns
+  * [PubSub] Use ETS dispatch table for increased broadcast performance
+  * [Channel] Use event intercept for increased broadcast performance
+
+* Backward incompatible changes
+  * [Router] channel routes are now defined on a socket handler module instead of the Router
+  * [Router] `socket` mounts have been moved from the Router to the Endpoint
+  * [Channel] `handle_out` callbacks now require explicit event intercept for callback to be invoked, with `Phoenix.Channel.intercept/1`
+  * [Transports] WebSocket and LongPoll transport configuration has been moved from mix config to the UserSocket
+
+* JavaScript client backwards incompatible changes
+  * `Phoenix.LongPoller` has been renamed to `Phoenix.LongPoll`
+  * A new client version is required to   accommodate server changes
+
+## v0.14.0 (2015-06-29)
+
+See these [`0.13.x` to `0.14.0` upgrade instructions](https://gist.github.com/chrismccord/57805158f463d3369103) to bring your existing apps up to speed.
+
+* Enhancements
+  * [Phoenix.HTML] Update to phoenix_html 1.1.0 which raises on missing assigns
+  * [Controller] Add `jsonp/2` for handling JSONP responses
+  * [Channel] Enhance logging with join information
+  * [Router] Add `forward` macro to forward a requests to a Plug, invoking the pipeline
+
+* Javascript client enhancements
+  * Add socket params to apply default, overridable params to all channel params.
+  * Enchance logging
+
+* Bug fixes
+  * [Channel] Fix xdomain content type not being treated as JSON requests
+
+* Javascript client backwards incompatible changes
+  * `logger` option to `Phoenix.Socket`, now uses three arguments, ie: `logger: (kind, msg, data) => { console.log(`${kind}: ${msg}`, data) }`
+
+* Backward incompatible changes
+  * [Controller] `plug :action` is now called automatically
+  * [Endpoint] The `:format` option in `:render_errors` has been renamed to `:default_format`
+  * [PubSub.Redis] The Redis PubSub adapter has been extracted into its own project. If using redis, see the [project's readme](https://github.com/phoenixframework/phoenix_pubsub_redis) for instructions
+  * [View] The default template `web/templates/layout/application.html.eex` has been renamed to `app.html.eex`
+
+## v0.13.1 (2015-05-16)
+
+See these [`0.13.0` to `0.13.1` upgrade instructions](https://gist.github.com/chrismccord/4a62780056b08c60542d) to bring your existing apps up to speed.
+
+* Enhancements
+  * [Channel] Add `phoenix.new.channel Channel topic`
+  * [Channel] Add `Phoenix.ChannelCase`
+  * [Controller] Assert changes in the repository on generated controller tests
+  * [Endpoint] Add `static_url` to endpoint to configure host, port and more for static urls
+  * [phoenix.new] Generate a channel case for new apps
+  * [phoenix.new] Improve installation workflow by asking to install and fetch dependencies once
+  * [phoenix.new] Add `errors_on/1` to generated model case
+
+## v0.13.0 (2015-05-11)
+
+See these [`0.12.x` to `0.13.0` upgrade instructions](https://gist.github.com/chrismccord/0a3bf5229801d61f219b) to bring your existing apps up to speed.
+
+* Enhancements
+  * [Channel] Allow router helpers to work in channels by passing a socket (instead of connection), for example: `user_path(socket, :index)`
+  * [Channel] Support replies in `join/3`
+  * [HTML] `Phoenix.HTML` has been extracted to its own project. You need to explicitly depend on it by adding `{:phoenix_html, "~> 1.0"}` to `deps` in your `mix.exs` file
+  * [HTML] `safe/1` in views is deprecated in favor of `raw/1`
+  * [Generators] Allow `belongs_to` in model generator which supports associations and indexes
+
+* Bug fixes
+  * [HTML] `select` no longer inverses the key and values in the given options
+  * [phoenix.new] Do not run `deps.get` if there is no Hex
+
+* Backward incompatible changes
+  * [Channel] To refuse joining a channel, `join/3` now requires `{:error, reason}`
+
+* Javascript client backward incompatible changes
+  * channel instances are now created from the `socket`
+  * channel joins are now called explicitly off channel instances
+  * channel onClose now only triggered on explicit client `leave` or server `:stop`
+  * Examples:
+
+      ```javascript
+      let socket = new Phoenix.Socket("/ws")
+      let chan = socket.chan("rooms:123", {})
+      chan.join().receive("ok", ({resp} => ...).receive("error", ({reason}) => ...)
+      ```
+
+
+## v0.12.0 (2015-04-30)
+
+See these [`0.11.x` to `0.12.0` upgrade instructions](https://gist.github.com/chrismccord/b3975ba356dba902ec88) to bring your existing apps up to speed.
+
+* Enhancements
+  * [Channel] Leaving the channel or closing the client will now trigger terminate on the channel, regardless of traping exits, with reasons `{:shutdown, :left}` and `{:shutdown, :closed}` respectively
+  * [Controller] Support `:namespace` option in controllers in order to use proper layout in namespaced applications
+  * [Controller] Add `controller_template/1` to lookup the template rendered from the controller
+  * [Generators] Add `phoenix.gen.json`
+  * [Generators] Allow models to be skipped on `phoenix.gen.json` and `phoenix.gen.html` generators
+  * [Generators] Generate test files in `phoenix.gen.html`, `phoenix.gen.json` and `phoenix.gen.model`
+  * [HTML] Add `search_input/3`, `telephone_input/3`, `url_input/3` and `range_input/3` to `Phoenix.HTML.Form`
+  * [Installer] Add the generated `config/prod.secret.exs` file to `.gitignore` by default
+  * [Static] Add a `mix phoenix.digest` task to run during deploys to generate digest filenames and gzip static files. A new configuration called `cache_static_manifest` was added which should be set to "priv/static/manifest.json" in production which will preload the manifest file generated by the mix task in order to point to the digested files when generating static paths
+  * [Test] Add `html_response/2`, `json_response/2`, `text_response/2` and `response/2` to aid connection-based testing
+  * [View] Add `render_existing/3` to render a template only if it exists without raising an error
+  * [View] Add `render_many/4` and `render_one/4` to make it easier to render collection and optional data respctivelly
+
+* Bug fixes
+  * [Channel] Ensure channels are terminated when WebSocket and LongPoller transports exit normally
+  * [Installer] Declare missing applications in generated phoenix.new app
+  * [Installer] No longer generate encryption salt in generated phoenix.new app
+  * [Installer] Generate proper credentials in phoenix.new for different databases
+  * [Mix] Ensure the serve endpoints configuration is persistent
+  * [Router] Ensure URL helpers know how to call `to_param` on query parameters
+
+## v0.11.0 (2015-04-07)
+
+See these [`0.10.x` to `0.11.0` upgrade instructions](https://gist.github.com/chrismccord/3603fd2735019f86c74b) to bring your existing apps up to speed.
+
+* Javascript client enhancements
+  * Joins are now synchronous, removing the prior issues of client race conditions
+  * Events can now be replied to from the server, for request/response style messaging
+  * Clients can now detect and react to individual channel errors and terminations
+
+* Javascript client backward incompatible changes
+  * The `Socket` instance no long connects automatically. You must explicitly call `connect()`
+  * `close()` has been renamed to `disconnect()`
+  * `send` has been renamed to `push` to unify client and server messaging commands
+  * The `join` API has changed to use synchronous messaging. Check the upgrade guide for details
 
 * Backwards incompatible changes
-  * [phoenix.js] The `Socket` instance no long connects automatically. You must
-    explicitly call `connect()`
-  * [phoenix.js] `close()` has been renamed to `disconnect()`
-  * Code reloader must now be configured in your endpoint instead of Phoenix. Therefore, upgrade your `config/dev.exs` replacing
+  * [Generator] `mix phoenix.gen.resource` renamed to `mix phoenix.gen.html`
+  * [Channel] `reply` has been renamed to `push` to better signify we are only push a message down the socket, not replying to a specific request
+  * [Channel] The return signatures for `handle_in/3` and `handle_out/3` have changed, ie:
+
+        handle_in(event :: String.t, msg :: map, Socket.t) ::
+          {:noreply, Socket.t} |
+          {:reply, {status :: atom, response :: map}, Socket.t} |
+          {:reply, status :: atom, Socket.t} |
+          {:stop, reason :: term, Socket.t} |
+          {:stop, reason :: term, reply :: {status :: atom, response :: map}, Socket.t} |
+          {:stop, reason :: term, reply :: status :: atom, Socket.t}
+
+        handle_out(event :: String.t, msg :: map, Socket.t) ::
+          {:ok, Socket.t} |
+          {:noreply, Socket.t} |
+          {:error, reason :: term, Socket.t} |
+          {:stop, reason :: term, Socket.t}
+
+
+  * [Channel] The `leave/2` callback has been removed. If you need to cleanup/teardown when a client disconnects, trap exits and handle in `terminate/2`, ie:
+
+        def join(topic, auth_msg, socket) do
+          Process.flag(:trap_exit, true)
+          {:ok, socket}
+        end
+
+        def terminate({:shutdown, :client_left}, socket) do
+          # client left intentionally
+        end
+        def terminate(reason, socket) do
+          # terminating for another reason (connection drop, crash, etc)
+        end
+
+  * [HTML] `use Phoenix.HTML` no longer imports controller functions. You must add `import Phoenix.Controller, only: [get_flash: 2]` manually to your views or your `web.ex`
+  * [Endpoint] Code reloader must now be configured in your endpoint instead of Phoenix. Therefore, upgrade your `config/dev.exs` replacing
 
           config :phoenix, :code_reloader, true
 
@@ -14,18 +270,33 @@
 
           config :your_app, Your.Endpoint, code_reloader: true
 
-    Furthermore, the Phoenix.CodeReloader plug must be plugged only if `code_reloading?` is enabled. So you'll need to wrap it accordingly in `lib/your_app/endpoint.ex`:
+  * [Endpoint] Live reloader is now a dependency instead of being shipped with Phoenix. Please add `{:phoenix_live_reload, "~> 0.3"}` to your dependencies
+  * [Endpoint] The `live_reload` configuration has changed to allow a `:url` option and work with `:patterns` instead of paths:
+
+        config :your_app, Your.Endpoint,
+          code_reloader: true,
+          live_reload: [
+            url: "ws://localhost:4000",
+            patterns: [~r{priv/static/.*(js|css|png|jpeg|jpg|gif)$},
+                       ~r{web/views/.*(ex)$},
+                       ~r{web/templates/.*(eex)$}]]
+
+  * [Endpoint] Code and live reloader must now be explicitly plugged in your endpoint. Wrap them inside `lib/your_app/endpoint.ex` in a `code_reloading?` block:
 
           if code_reloading? do
-            use Phoenix.CodeReloader
+            plug Phoenix.LiveReloader
+            plug Phoenix.CodeReloader
           end
 
 * Enhancements
-  * Allow the default format used when rendering errors to be customized in the `render_views` configuration
-  * Add `button/2` function to `Phoenix.HTML`
+  * [Endpoint] Allow the default format used when rendering errors to be customized in the `render_views` configuration
+  * [HTML] Add `button/2` function to `Phoenix.HTML`
+  * [HTML] Add `textarea/3` function to `Phoenix.HTML.Form`
+  * [Controller] `render/3` and `render/4` allows a view to be specified
+    directly.
 
 * Bug fixes
-  * Fix out of order hours, minutes and days in date/time select
+  * [HTML] Fix out of order hours, minutes and days in date/time select
 
 ## v0.10.0 (2015-03-08)
 
@@ -121,7 +392,7 @@ See these [`0.6.x` to `0.7.0` upgrade instructions](https://gist.github.com/chri
   * [View] `ErrorsView` has been renamed to `ErrorView`, update your `MyApp.ErrorsView` accordingly
   * [Controller] `html/2`, `json/2`, `text/2`, `redirect/2` and
 `render/3` no longer halt automatically
-  * [Router] Configuration is no longer stored in the router but in the application endpoint. The before pipeline was also removed and move to the endpoint itself
+  * [Router] Configuration is no longer stored in the router but in the application endpoint. The before pipeline was also removed and moved to the endpoint itself
 
 ## v0.6.2 (2014-12-07)
 

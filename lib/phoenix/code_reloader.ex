@@ -14,16 +14,18 @@ defmodule Phoenix.CodeReloader do
 
   @doc """
   Reloads code within the paths specified in the `:reloadable_paths`
-  config for the endpoint.
+  config for the endpoint by invoking the `:reloadable_compilers`.
 
   This is configured in your application environment like:
 
       config :your_app, YourApp.Endpoint,
-        reloadable_paths: ["web"]
+        reloadable_paths: ["web"],
+        reloadable_compilers: [:gettext, :phoenix, :elixir]
 
-  Keep in mind that the paths passed to :reloadable_paths must be
-  a subset of the paths specified in the :elixirc_paths option of
-  `project/0` in mix.exs.
+  Keep in mind that the paths passed to `:reloadable_paths` must be
+  a subset of the paths specified in the `:elixirc_paths` option of
+  `project/0` in `mix.exs` while `:reloadable_compilers` is a subset
+  of `:compilers`.
   """
   @spec reload!(module) :: :ok | :noop | {:error, binary()}
   defdelegate reload!(endpoint), to: Phoenix.CodeReloader.Server
@@ -49,7 +51,7 @@ defmodule Phoenix.CodeReloader do
         |> send_resp(500, template(conn, output))
         |> halt()
       _ ->
-        Phoenix.Router.LiveReload.call(conn, Phoenix.Router.LiveReload.init(opts))
+        conn
     end
   end
 
@@ -58,7 +60,7 @@ defmodule Phoenix.CodeReloader do
     <!DOCTYPE html>
     <html>
     <head>
-        <title>CompilationError at #{method(conn)} #{full_path(conn)}</title>
+        <title>CompilationError at #{method(conn)} #{conn.request_path}</title>
         <style>
         * {
             margin: 0;
@@ -160,7 +162,7 @@ defmodule Phoenix.CodeReloader do
     <body>
         <div class="top">
             <header class="exception">
-                <h2><strong>CompilationError</strong> <span>at #{method(conn)} #{full_path(conn)}</span></h2>
+                <h2><strong>CompilationError</strong> <span>at #{method(conn)} #{conn.request_path}</span></h2>
                 <p>Showing console output</p>
             </header>
         </div>

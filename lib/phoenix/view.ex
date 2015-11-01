@@ -135,6 +135,11 @@ defmodule Phoenix.View do
         use Phoenix.Template, root:
           Path.join(unquote(root),
                     Phoenix.Template.module_to_template_root(__MODULE__, unquote(namespace), "View"))
+
+        @view_resource String.to_atom(Phoenix.Naming.resource_name(__MODULE__, "View"))
+
+        @doc "The resource name, as an atom, for this view"
+        def __resource__, do: @view_resource
       end
     else
       raise "expected :root to be given as an option"
@@ -176,7 +181,7 @@ defmodule Phoenix.View do
   templates, `@inner` will be always marked as safe.
 
       Phoenix.View.render(YourApp.UserView, "index.html",
-                          layout: {YourApp.LayoutView, "application.html"})
+                          layout: {YourApp.LayoutView, "app.html"})
       #=> {:safe, "<html><h1>Hello!</h1></html>"}
 
   """
@@ -186,10 +191,6 @@ defmodule Phoenix.View do
     |> Map.pop(:layout, false)
     |> render_within(module, template)
   end
-
-  defp to_map(assigns) when is_map(assigns), do: assigns
-  defp to_map(assigns) when is_list(assigns), do: :maps.from_list(assigns)
-  defp to_map(assigns), do: Dict.merge(%{}, assigns)
 
   defp render_within({{layout_mod, layout_tpl}, assigns}, inner_mod, template) do
     template
@@ -205,6 +206,132 @@ defmodule Phoenix.View do
   defp render_layout(inner_content, layout_mod, layout_tpl, assigns) do
     assigns = Map.put(assigns, :inner, inner_content)
     layout_mod.render(layout_tpl, assigns)
+  end
+
+  @doc """
+  Renders a template only if it exists.
+
+  Same as `render/3`, but returns `nil` instead of raising.
+  Useful for dynamically rendering templates in the layout that may or
+  may not be implemented by the `@inner` view.
+
+  ## Examples
+
+  Consider the case where the application layout allows views to dynamically
+  render a section of script tags in the head of the document. Some views
+  may wish to inject certain scripts, while others will not.
+
+      <head>
+        <%= render_existing view_module(@conn), "scripts.html", assigns %>
+      </head>
+
+  Then the module for the `@inner` view can decide to provide scripts with
+  either a precompiled template, or by implementing the function directly, ie:
+
+      def render("scripts.html", _assigns) do
+        "<script src=\"...\">"
+      end
+
+  To use a precompiled template, create a `scripts.html.eex` file in the `templates`
+  directory for the corresponding view you want it to render for. For example,
+  for the `UserView`, create the `scripts.html.eex` file at `web/templates/user/`.
+
+  ## Rendering based on controller template
+
+  In some cases, you might need to render based on the template from the controller.
+  For these cases, `Phoenix.Controller.view_template/1` can pair with
+  `render_existing/3` for per-template based content, ie:
+
+      <head>
+        <%= render_existing view_module(@conn), "scripts." <> view_template(@conn), assigns %>
+      </head>
+
+      def render("scripts.show.html", _assigns) do
+        "<script src=\"...\">"
+      end
+      def render("scripts.index.html", _assigns) do
+        "<script src=\"...\">"
+      end
+
+  """
+  def render_existing(module, template, assigns \\ []) do
+    render(module, template, Dict.put(assigns, :render_existing, {module, template}))
+  end
+
+  @doc """
+  Renders a collection.
+
+  A collection is any enumerable of structs. This function
+  returns the rendered collection in a list:
+
+      render_many users, UserView, "show.html"
+
+  is roughly equivalent to:
+
+      Enum.map(users, fn user ->
+        render(UserView, "show.html", user: user)
+      end)
+
+  The underlying user is passed to the view and template as `:user`,
+  which is inflected from the view name. The name of the key
+  in assigns can be customized with the `:as` option:
+
+      render_many users, UserView, "show.html", as: :data
+
+  is roughly equivalent to:
+
+      Enum.map(users, fn user ->
+        render(UserView, "show.html", data: user)
+      end)
+
+  """
+  def render_many(collection, view, template, assigns \\ %{}) do
+    assigns = to_map(assigns)
+    Enum.map(collection, fn model ->
+      render view, template, assign_model(assigns, view, model)
+    end)
+  end
+
+  @doc """
+  Renders a single item if not nil.
+
+  The following:
+
+      render_one user, UserView, "show.html"
+
+  is roughly equivalent to:
+
+      if user != nil do
+        render(UserView, "show.html", user: user)
+      end
+
+  The underlying user is passed to the view and template as
+  `:user`, which is inflected from the view name. The name
+  of the key in assigns can be customized with the `:as` option:
+
+      render_one user, UserView, "show.html", as: :data
+
+  is roughly equivalent to:
+
+      if user != nil do
+        render(UserView, "show.html", data: user)
+      end
+
+  """
+  def render_one(model, view, template, assigns \\ %{}) do
+    if model != nil do
+      assigns = to_map(assigns)
+      render view, template, assign_model(assigns, view, model)
+    end
+  end
+
+  defp to_map(assigns) when is_map(assigns), do: assigns
+  defp to_map(assigns) when is_list(assigns), do: :maps.from_list(assigns)
+  defp to_map(assigns), do: Dict.merge(%{}, assigns)
+
+  defp assign_model(assigns, view, model) do
+    as = Map.get(assigns, :as) || view.__resource__
+    Map.put(assigns, as, model)
   end
 
   @doc """
@@ -229,4 +356,3 @@ defmodule Phoenix.View do
     end
   end
 end
-

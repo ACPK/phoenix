@@ -6,7 +6,7 @@ defmodule Phoenix.CodeReloaderTest do
     root: File.cwd!,
     code_reloader: true,
     reloadable_paths: ["web"],
-    live_reload: ["some/path"])
+    live_reload: [url: "ws://localhost:4000", patterns: [~r/some\/path/]])
 
   defmodule Endpoint do
     use Phoenix.Endpoint, otp_app: :phoenix
@@ -49,25 +49,5 @@ defmodule Phoenix.CodeReloaderTest do
     assert conn.status == 500
     assert conn.resp_body =~ "oops"
     assert conn.resp_body =~ "CompilationError at GET /"
-  end
-
-  test "injects live_reload for html requests if configured" do
-    opts = Phoenix.CodeReloader.init([])
-    conn = conn(:get, "/")
-           |> Plug.Conn.put_private(:phoenix_endpoint, Endpoint)
-           |> put_resp_content_type("text/html")
-           |> Phoenix.CodeReloader.call(opts)
-           |> send_resp(200, "")
-    assert to_string(conn.resp_body) =~ ~r/require\("phoenix"\)/
-  end
-
-  test "skips live_reload if not html request" do
-    opts = Phoenix.CodeReloader.init([])
-    conn = conn(:get, "/")
-           |> Plug.Conn.put_private(:phoenix_endpoint, Endpoint)
-           |> put_resp_content_type("application/json")
-           |> Phoenix.CodeReloader.call(opts)
-           |> send_resp(200, "")
-    refute to_string(conn.resp_body) =~ ~r/require\("phoenix"\)/
   end
 end
